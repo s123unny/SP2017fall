@@ -13,6 +13,9 @@ int main(int argc, char const *argv[])
 	} else {
 		fp = stdin;
 	}
+	if (fp == NULL) {
+		frpintf(stderr, "error\n");
+	}
 	while ((c = fgetc(fp)) != EOF) {
 		if (c == '\n') {
 			printf("%d\n", ans);
