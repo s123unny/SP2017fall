@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <openssl/md5.h>
+#include <unordered_map>
+#include <string>
 
 bool myfunction (const char* i, const char* j) { return strcmp(i, j) < 0; }
 
@@ -40,7 +42,6 @@ int store_in_line(char *line[], int record_fp, char stop) {
 	char c[2];
 	int num = 1, line_index = 0;
 
-	lseek(record_fp, -2, SEEK_END);
 	read(record_fp, c, sizeof(char));
 	while (c[0] != stop) {
 		lseek(record_fp, -2, SEEK_CUR);
@@ -64,11 +65,13 @@ int store_in_line(char *line[], int record_fp, char stop) {
 int main(int argc, char const *argv[])
 {
 	//haven't done rename function yet
+	char record_path[256], name[] = ".loser_record";
+	int record_fp;
 	switch(argv[1][0]) {
 	case 's': //status
-		char record_path[256], name[] = ".loser_record";
 		get_file_path(record_path, argv[2], name);
-		int record_fp = open(record_path, O_RDONLY);
+		record_fp = open(record_path, O_RDONLY);
+		lseek(record_fp, -2, SEEK_END);
 		if (record_fp < 0) {
 			printf("[new_file]\n");
 			//print all file except . .. and follow dictionary order
@@ -91,6 +94,14 @@ int main(int argc, char const *argv[])
 			char *line[file_names.length];
 			int total_line = store_in_line(line, record_fp, ')');
 			int line_index = total_line -1;
+			std::unordered_map<std::string, std::string> line_in_map;
+			for (int i = 0; i < total_line; i++) {
+				std::string md5, filename = line[i];
+				md5 = md5.assign(filename, filename.find(" ", 0)+1, filename.length());
+				filename.erase(filename.find(' ', 0));
+				printf("%s==%s\n", md5.c_str(), filename.c_str());
+				line_in_map.emplace(md5, filename);
+			}
 
 			for (int i = 2; i < file_names.length; i++) {
 				//match
@@ -113,29 +124,18 @@ int main(int argc, char const *argv[])
 					//new or copy
 					char new_md5[33];
 					MD5_generator(file_names.names[i], new_md5, argv[2]);
-					int found = 0;
-					for (int j = 0; j < total_line; j++) {
-						char *start = strstr(line[j], new_md5);
-						if (start != NULL) {
-							copied[co] = i;
-							copyfrom[co] = (char *)malloc(sizeof(char) * 17);
-							strncpy(copyfrom[co], line[j], start - line[j] - 1);
-							//printf("%d copied %d %s\n", co, i, file_names.names[copied[co]]);
-							co ++;
-							found = 1;
-							break;
-						}
-					}
-					if (!found) {
+					std::unordered_map<std::string,std::string>::iterator found = line_in_map.find(new_md5);
+					if (found == line_in_map.end()) {
 						new_file[nf] = i;
-						//printf("%d new_file %d %s\n", nf, i, file_names.names[new_file[nf]]);
 						nf ++;
+					} else {
+						copied[co] = i;
+						copyfrom[co] = (char *)malloc(sizeof(char) * 256);
+						strcpy(copyfrom[co], found->second.c_str());
+						co ++;
 					}
 				}
 			}
-			/*for (size_t i = 0; i < file_names.length; i++) {
-				printf("%d %s\n",i, file_names.names[i]);
-			}*/
 			printf("[new_file]\n");
 			for (int i = 0; i < nf; i++) {
 				printf("%s\n", file_names.names[new_file[i]]);
@@ -154,9 +154,41 @@ int main(int argc, char const *argv[])
 		}
 		break;
 	/*case 'c': //commit
-		break;
-	case 'l': //log
 		break;*/
+	case 'l': //log
+		get_file_path(record_path, argv[3], name);
+		int len = strlen(argv[2]), time = 0;
+		for (int i = 0; i < len; i++) {
+			time *= 10;
+			time += argv[2][i] - '0';
+		}
+		record_fp = open(record_path, O_RDONLY);
+		lseek(record_fp, -2, SEEK_END);
+		if (record_fp != -1) {
+			while (time--) {
+				//if time greater than commit number?
+				char *line[2010];
+				int total_line = store_in_line(line, record_fp, '#');
+				char commit_line[20] = "#";
+				int i = 0;
+				while (commit_line[i] != '\n') {
+					i++;
+					read(record_fp, commit_line + i, sizeof(char));
+				}
+				commit_line[i] = '\0';
+				printf("%s\n", commit_line);
+				for (int i = total_line-1; i >= 0; i--) {
+					printf("%s\n", line[i]);
+				}
+				free_pointers(line, total_line);
+				off_t temp = lseek(record_fp, -strlen(commit_line)-5, SEEK_CUR);
+				if (temp < 0) {
+					break;
+				}
+				if (time)printf("\n");
+			}
+		}
+		break;
 	}
 	return 0;
 }
