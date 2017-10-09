@@ -6,6 +6,10 @@
 #include <openssl/md5.h>
 #include <unordered_map>
 #include <string>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 
 bool myfunction (const char* i, const char* j) { return strcmp(i, j) < 0; }
 
@@ -15,17 +19,37 @@ void get_file_path(char dest[256], const char dir[],const char file[]) {
 	dest[strlen(dest)] = '/';
 	strcpy(temp, file);
 }
+unsigned long get_size_by_fd(int fd) {
+    struct stat statbuf;
+    if(fstat(fd, &statbuf) < 0) exit(-1);
+    return statbuf.st_size;
+}
 
 void MD5_generator(const char file[256], char md5string[33], const char path[]) {
-	char command[300] = "md5sum ";
+	/*char command[300] = "md5sum ";
 	char file_path[256];
 	get_file_path(file_path, path, file);
 	strcat(command, file_path);
 	FILE *fp = popen(command, "r");
-	fread(md5string, sizeof(char)*32, 1, fp);
+	fread(md5string, sizeof(char), 32, fp);
 	md5string[32] = '\0';
 	//printf("	%s\n", md5string);
-	pclose(fp);
+	pclose(fp);*/
+	unsigned char result[MD5_DIGEST_LENGTH];
+	char file_path[256];
+	get_file_path(file_path, path, file);
+	unsigned long file_size;
+    void* file_buffer;
+	int file_descript = open(file_path, O_RDONLY);
+
+	file_size = get_size_by_fd(file_descript);
+
+    file_buffer = mmap(0, file_size, PROT_READ, MAP_SHARED, file_descript, 0);
+    MD5((unsigned char*) file_buffer, file_size, result);
+    munmap(file_buffer, file_size); 
+    for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
+    	sprintf(&md5string[i*2], "%02x", (unsigned int)result[i]);
+    }
 }
 
 void status_commit(char const from_argv2[], int type, char record_path[]) {
@@ -33,19 +57,18 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 	struct FileNames file_names = list_file(from_argv2);
 	std::sort(file_names.names, file_names.names + file_names.length, myfunction);
 	if (record_fp == NULL) {
-		//print all file except . .. and follow dictionary order
 		if (type) {
 			record_fp = stdout;
 		} else {
-			//create file
 			if (file_names.length == 2) {
 				free_file_names(file_names);
 				return;
 			}
+			//create file
 			record_fp = fopen(record_path, "w");
 			fprintf(record_fp, "# commit 1\n");
 		}
-		//write
+		//print all except . & ..
 		fprintf(record_fp, "[new_file]\n");
 		for (int i = 2; i < file_names.length; i++) {
 			fprintf(record_fp, "%s\n", file_names.names[i]);
@@ -65,11 +88,10 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 		fseek(record_fp, -1, SEEK_END);
 		int new_file[file_names.length], modified[file_names.length], copied[file_names.length], nf = 0, mo = 0, co = 0;
 		char copyfrom[file_names.length][256];
-		//remember delete . and ..
 		
 		char all_md5[file_names.length][33]; //for commit
 		std::unordered_map<std::string, std::string> line_in_map;
-		char line_filename[file_names.length][256], line_md5[file_names.length][33];
+		char line_filename[file_names.length+1][256], line_md5[file_names.length][33];
 		std::string md5, filename;
 
 		long pos =  ftell(record_fp);
@@ -79,7 +101,7 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 	    fread(buffer, sizeof(char), pos, record_fp);
 	    buffer[pos] = '\0';
 
-	    char *start = strrchr(buffer, ')');
+	    char *start = strrchr(buffer, ')'), *commit_start;
 	    start += 2;
 
 	    int offset, line_index = 0;
@@ -128,7 +150,7 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 				return;
 			}
 			start = strrchr(buffer, '#');
-			start = strchr(start+2, ' ');
+			start = strchr(start+2, ' '); //commit_start is the pointer to #
 			start ++;
 			int num = 0;
 			while (*start != '\n') {
@@ -139,13 +161,13 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 			num ++;
 			fseek(record_fp, 0, SEEK_END);
 			fprintf(record_fp, "\n# commit %d\n", num);
-		}
-		if (type) {
+		} else {
+			fclose(record_fp);
 			record_fp = stdout;
 		}
-		char buf[6000];
+		char buf[6000];//print into buffer first to performance better
 		setvbuf(record_fp, buf, _IOFBF, sizeof(buf));
-
+		
 		fprintf(record_fp, "[new_file]\n");
 		for (int i = 0; i < nf; i++) {
 			fprintf(record_fp, "%s\n", file_names.names[new_file[i]]);
@@ -165,6 +187,7 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 					fprintf(record_fp, "%s %s\n", file_names.names[i], all_md5[i]);
 				}
 			}
+			fclose(record_fp);
 		}
 		free_file_names(file_names);
 	}
@@ -197,6 +220,7 @@ int main(int argc, char const *argv[])
 		FILE *fp = fopen(config_path, "r");
 		//if (fp == NULL) printf("QQQ\n");
 		type = feature_of_config(fp, argv[1]);
+		fclose(fp);
 	}
 	switch(type) {
 	case 's': //status
@@ -235,6 +259,7 @@ int main(int argc, char const *argv[])
 				if (time) printf("\n");
 			}
 		}
+		fclose(record_fp);
 		break;
 	}
 	return 0;
