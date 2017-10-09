@@ -3,13 +3,14 @@
 #include <stdlib.h>
 #include <algorithm>
 #include "list_file.h"
-//#include <sys/types.h>
-//#include <unistd.h>
-//#include <sys/stat.h>
-//#include <fcntl.h>
 #include <openssl/md5.h>
 #include <unordered_map>
+#include <vector>
 #include <string>
+
+struct Set {
+	char c_md5[33], c_filename[256];
+};
 
 bool myfunction (const char* i, const char* j) { return strcmp(i, j) < 0; }
 
@@ -38,31 +39,6 @@ void MD5_generator(const char file[256], char md5string[33], const char path[]) 
 	pclose(fp);
 }
 
-int store_in_line(char *line[], FILE *record_fp, char stop) {
-    char c;
-    int num = 1, line_index = 0;
-
-    fscanf(record_fp, "%c", &c);
-    while (c != stop) {
-        fseek(record_fp, -2, SEEK_CUR);
-        fscanf(record_fp, "%c", &c);
-        num ++;
-        if (c == '\n') {
-            line[line_index] = (char *)malloc(sizeof(char) * (num+1));
-            fgets(line[line_index], num+1, record_fp);
-            line[line_index][num-1] = '\0';
-            //printf("==%s==\n", line[line_index]);
-            fseek(record_fp, -num, SEEK_CUR);
-            line_index ++;
-            num = 0;
-        }
-    }
-    /*for (int i = 0; i < line_index; i++) {
-            printf("%s\n", line[i]);
-    }*/
-    return line_index;
-}
-
 void status_commit(char const from_argv2[], int type, char record_path[]) {
 	FILE *record_fp = fopen(record_path, "r+");
 	struct FileNames file_names = list_file(from_argv2);
@@ -70,21 +46,20 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 	if (record_fp == NULL) {
 		//print all file except . .. and follow dictionary order
 		if (type) {
-			printf("[new_file]\n");
-			//delete . and .. (from 2)
-			for (int i = 2; i < file_names.length; i++) {
-				printf("%s\n", file_names.names[i]);
-			}
-			printf("[modified]\n[copied]\n");
+			record_fp = stdout;
 		} else {
 			//create file
 			record_fp = fopen(record_path, "w");
-			//write newfle & md5
-			fprintf(record_fp, "# commit 1\n[new_file]\n");
-			for (int i = 2; i < file_names.length; i++) {
-				fprintf(record_fp, "%s\n", file_names.names[i]);
-			}
-			fprintf(record_fp, "[modified]\n[copied]\n(MD5)\n");
+		}
+		//write
+		fprintf(record_fp, "# commit 1\n[new_file]\n");
+		for (int i = 2; i < file_names.length; i++) {
+			fprintf(record_fp, "%s\n", file_names.names[i]);
+		}
+		fprintf(record_fp, "[modified]\n[copied]\n");
+		if (!type) {
+			//write md5
+			fprintf(record_fp, "(MD5)\n");
 			for (int i = 2; i < file_names.length; i++) {
 				char new_md5[33];
 				MD5_generator(file_names.names[i], new_md5, from_argv2);
@@ -93,45 +68,53 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 		}
 		free_file_names(file_names);
 	} else {
-		fseek(record_fp, -2, SEEK_END);
+		fseek(record_fp, -1, SEEK_END);
 		int new_file[1000], modified[1000], copied[1000], nf = 0, mo = 0, co = 0;
-		char *copyfrom[1000];
+		char *copyfrom[1000], buffer[550000];
 		//remember delete . and ..
 		
 		char all_md5[file_names.length][33]; //for commit
-		char *line[file_names.length];
-		int total_line = store_in_line(line, record_fp, ')');
-		int line_index = total_line -1;
 		std::unordered_map<std::string, std::string> line_in_map;
-		for (int i = 0; i < total_line; i++) {
-			std::string md5, filename = line[i];
-			md5 = md5.assign(filename, filename.find(" ", 0)+1, filename.length());
-			filename.erase(filename.find(' ', 0));
-			//printf("%s==%s\n", md5.c_str(), filename.c_str());
+		std::vector<Set> line;
+		std::string md5, filename;
+		Set temp;
+
+		long pos =  ftell(record_fp);
+	    pos = std::min(pos, (long)550000);
+	    fseek(record_fp, -pos, SEEK_CUR);
+	    fread(buffer, sizeof(char), pos, record_fp);
+	    buffer[pos] = '\0';
+
+	    char *start = strrchr(buffer, ')');
+	    start += 2;
+
+	    int offset;
+		while (sscanf(start, "%s%s%n", temp.c_filename, temp.c_md5, &offset) == 2) {
+			start += offset;
+			filename = temp.c_filename;
+			md5 = temp.c_md5;
+			//printf("%s==%s\n", temp.c_filename, temp.c_md5);
+			line.push_back(temp);
 			line_in_map.emplace(md5, filename);
 		}
 
+		int line_index = 0;
+
 		for (int i = 2; i < file_names.length; i++) {
 			//match
-			if (strstr(line[line_index], file_names.names[i]) != NULL) {
+			if (strcmp(line[line_index].c_filename, file_names.names[i]) == 0) {
 				//exist -> check if modified
-				//printf("found: %s\n", file_names.names[i]);
-				char new_md5[33], before_md5[33];
-
+				char new_md5[33];
 				MD5_generator(file_names.names[i], new_md5, from_argv2);
-				char *start = strchr(line[line_index], ' ');
-				start ++;
-				strcpy(before_md5, start);
-				//printf("%s==\n", before_md5);
-				if (strcmp(new_md5, before_md5) != 0) {
+
+				if (strcmp(new_md5, line[line_index].c_md5) != 0) {
 					modified[mo] = i;
-					//printf("%d modified %d %s\n", mo, i, file_names.names[modified[mo]]);
 					mo ++;
 				}
 				if (!type) {
 					strcpy(all_md5[i], new_md5);
 				}
-				line_index --;
+				line_index ++;
 			} else {
 				//new or copy
 				if (strcmp(file_names.names[i], ".loser_record") != 0) {
@@ -153,51 +136,37 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 				}
 			}
 		}
-		if (type) {
-			printf("[new_file]\n");
-			for (int i = 0; i < nf; i++) {
-				printf("%s\n", file_names.names[new_file[i]]);
-			}
-			printf("[modified]\n");
-			for (int i = 0; i < mo; i++) {
-				printf("%s\n", file_names.names[modified[i]]);
-			}
-			printf("[copied]\n");
-			for (int i = 0; i < co; i++) {
-				printf("%s => %s\n", copyfrom[i], file_names.names[copied[i]]);
-			}
-		} else {
+		if (!type) {
 			//find which commit
-			char commit_num[20] = "x";
-			int i = 0, num = 0;
-			while (commit_num[0] != '#') {
-				fseek(record_fp, -2, SEEK_CUR);
-				fscanf(record_fp, "%c", commit_num);
-			}
-			while (commit_num[i] != '\n') {
-				i++;
-				fscanf(record_fp, "%c", commit_num + i);
-			}
-			i --;
-			while (commit_num[i] != ' ') {
+			start = strrchr(buffer, '#');
+			start = strchr(start+2, ' ');
+			start ++;
+			int num = 0;
+			while (*start != '\n') {
 				num *= 10;
-				num += commit_num[i] - '0';
-				i --;
+				num += *start - '0';
+				start ++;
 			}
 			num ++;
 			fseek(record_fp, 0, SEEK_END);
-			fprintf(record_fp, "\n# commit %d\n[new_file]\n", num);
-			for (int i = 0; i < nf; i++) {
-				fprintf(record_fp, "%s\n", file_names.names[new_file[i]]);
-			}
-			fprintf(record_fp, "[modified]\n");
-			for (int i = 0; i < mo; i++) {
-				fprintf(record_fp, "%s\n", file_names.names[modified[i]]);
-			}
-			fprintf(record_fp, "[copied]\n");
-			for (int i = 0; i < co; i++) {
-				fprintf(record_fp, "%s => %s\n", copyfrom[i], file_names.names[copied[i]]);
-			}
+			fprintf(record_fp, "\n# commit %d\n", num);
+		}
+		if (type) {
+			record_fp = stdout;
+		}
+		fprintf(record_fp, "[new_file]\n");
+		for (int i = 0; i < nf; i++) {
+			fprintf(record_fp, "%s\n", file_names.names[new_file[i]]);
+		}
+		fprintf(record_fp, "[modified]\n");
+		for (int i = 0; i < mo; i++) {
+			fprintf(record_fp, "%s\n", file_names.names[modified[i]]);
+		}
+		fprintf(record_fp, "[copied]\n");
+		for (int i = 0; i < co; i++) {
+			fprintf(record_fp, "%s => %s\n", copyfrom[i], file_names.names[copied[i]]);
+		}
+		if (!type) {
 			fprintf(record_fp, "(MD5)\n");
 			for (int i = 2; i < file_names.length; i++) {
 				if (strcmp(file_names.names[i], ".loser_record") != 0) {
@@ -206,7 +175,6 @@ void status_commit(char const from_argv2[], int type, char record_path[]) {
 			}
 		}
 		free_pointers(copyfrom, co);
-		free_pointers(line, total_line);
 		free_file_names(file_names);
 	}
 }
@@ -257,24 +225,23 @@ int main(int argc, char const *argv[])
 		}
 		FILE *record_fp = fopen(record_path, "r");
 		if (record_fp != NULL) {
-			fseek(record_fp, -2, SEEK_END);
+			char buffer[550000];
+			fseek(record_fp, 0, SEEK_END);
 			while (time--) {
-				//if time greater than commit number?
-				char *line[2010];
-				int total_line = store_in_line(line, record_fp, '#');
-				char commit_line[20];
-				int num;
-				fscanf(record_fp, " %s %d", commit_line, &num);
-				printf("# %s %d\n", commit_line, num);
-				for (int i = total_line-1; i >= 0; i--) {
-					printf("%s\n", line[i]);
+				long pos =  ftell(record_fp);
+			    pos = std::min(pos, (long)550000);
+			    fseek(record_fp, -pos, SEEK_CUR);
+			    fread(buffer, sizeof(char), pos, record_fp);
+			    buffer[pos] = '\0';
+
+			    char *start = strrchr(buffer, '#');
+			    printf("%s", start);
+			    
+			    off_t temp = fseek(record_fp, -strlen(start)-1, SEEK_CUR);
+			    if (temp < 0) {
+					break;//if time greater than commit number? ->done
 				}
-				free_pointers(line, total_line);
-				off_t temp = fseek(record_fp, -strlen(commit_line)-7, SEEK_CUR);
-				if (temp < 0) {
-					break;
-				}
-				if (time)printf("\n");
+				if (time) printf("\n");
 			}
 		}
 		break;
