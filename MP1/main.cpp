@@ -240,16 +240,25 @@ int main(int argc, char const *argv[])
 		}
 		FILE *record_fp = fopen(record_path, "r");
 		if (record_fp != NULL) {
-			char buffer[550001];
+			char buffer[550000];
 			fseek(record_fp, 0, SEEK_END);
 			while (time--) {
-				long pos =  ftell(record_fp);
-			    pos = std::min(pos, (long)550000);
+				long pos = ftell(record_fp), length = 1024;
+			    pos = std::min(pos, length);
 			    fseek(record_fp, -pos, SEEK_CUR);
 			    fread(buffer, sizeof(char), pos, record_fp);
 			    buffer[pos] = '\0';
 
 			    char *start = strrchr(buffer, '#');
+			    while (start == NULL) {
+			    	pos =  ftell(record_fp);
+			    	length += 1024;
+			    	pos = std::min(pos, length);
+			    	fseek(record_fp, -pos, SEEK_CUR);
+			    	fread(buffer, sizeof(char), pos, record_fp);
+			    	buffer[pos] = '\0';
+			    	start = strrchr(buffer, '#');
+			    }
 			    printf("%s", start);
 			    
 			    off_t temp = fseek(record_fp, -strlen(start)-1, SEEK_CUR);
