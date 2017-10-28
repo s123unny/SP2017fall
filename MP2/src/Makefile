@@ -10,7 +10,7 @@ CSIEBOX_SERVER_OBJS=csiebox_server_main.o csiebox_server.o connect.o csiebox_com
 CSIEBOX_CLIENT_OBJS=csiebox_client_main.o csiebox_client.o connect.o csiebox_common.o
 INOTIFY_TEST_OBJS=inotify_test.o
 LIB=-lm -lbsd
-.PHONY: clean
+.PHONY: clean cleandata
 all: $(TARGET)
 
 %.o: %.cpp
@@ -37,4 +37,6 @@ csiebox_server: $(CSIEBOX_SERVER_OBJS)
 inotify_test: $(INOTIFY_TEST_OBJS)
 	@echo "making: " $@
 	@$(GCC) -o $(BIN)/$@ $(FLAG) $(INCLUDE) $(INOTIFY_TEST_OBJS) $(LIB)
-
+rmdata:
+	rm -rf ../sdir/user
+	rm -f ../cdir/longestPath.txt

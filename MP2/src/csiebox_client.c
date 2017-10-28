@@ -14,6 +14,8 @@
 
 #define EVENT_SIZE (sizeof(struct inotify_event))
 #define EVENT_BUF_LEN (1024 * (EVENT_SIZE + 16))
+#define FILE_MAX 300
+#define LEN_MAX 312
 
 static int parse_arg(csiebox_client* client, int argc, char** argv);
 static int login(csiebox_client* client);
@@ -40,19 +42,15 @@ void csiebox_client_init(csiebox_client** client, int argc, char** argv) {
     tmp->conn_fd = fd;
     *client = tmp;
 }
-unsigned long get_size_by_fd(int fd) {
-    struct stat statbuf;
-    if(fstat(fd, &statbuf) < 0) exit(-1);
-    return statbuf.st_size;
-}
 
 int process_Meta(csiebox_client* client, char* path, struct stat statbuf) {
+    printf("process_Meta\n");
     csiebox_protocol_meta req;
     memset(&req, 0, sizeof(req));
     req.message.header.req.magic = CSIEBOX_PROTOCOL_MAGIC_REQ;
     req.message.header.req.op = CSIEBOX_PROTOCOL_OP_SYNC_META;
     req.message.header.req.datalen = sizeof(req) - sizeof(req.message.header);
-    req.message.body.pathlen = strlen(path);
+    req.message.body.pathlen = strlen(path+8);
     req.message.body.stat = statbuf;
     if (!S_ISDIR(statbuf.st_mode))md5_file(path, req.message.body.hash);
 
@@ -63,7 +61,7 @@ int process_Meta(csiebox_client* client, char* path, struct stat statbuf) {
     }
 
     //send path
-    send_message(client->conn_fd, path+8, strlen(path));
+    send_message(client->conn_fd, path+8, req.message.body.pathlen);
 
     //receive csiebox_protocol_header from server
     csiebox_protocol_header header;
@@ -72,10 +70,10 @@ int process_Meta(csiebox_client* client, char* path, struct stat statbuf) {
         if (header.res.magic == CSIEBOX_PROTOCOL_MAGIC_RES &&
             header.res.op == CSIEBOX_PROTOCOL_OP_SYNC_META ) {
             if (header.res.status == CSIEBOX_PROTOCOL_STATUS_OK) {
-                printf("Receive OK from server\n");
+                printf("meta_Receive OK from server\n");
                 return 1;
             } else if (header.res.status == CSIEBOX_PROTOCOL_STATUS_MORE) {
-                printf("Receive MORE from server\n");
+                printf("meta_Receive MORE from server\n");
                 return 2;
             }
         } else {
@@ -85,6 +83,7 @@ int process_Meta(csiebox_client* client, char* path, struct stat statbuf) {
 }
 
 int process_file(csiebox_client* client, char *fullpath, struct stat statbuf) {
+    printf("process_file\n");
     csiebox_protocol_file req;
     memset(&req, 0, sizeof(req));
     req.message.header.req.magic = CSIEBOX_PROTOCOL_MAGIC_REQ;
@@ -94,20 +93,18 @@ int process_file(csiebox_client* client, char *fullpath, struct stat statbuf) {
     int fd;
     void* file_buffer;
     unsigned long file_size;
-    if (S_ISLNK(statbuf.st_mode)) {
-        fprintf(stderr,"123\n");
-        char temp[300];
-        readlink(fullpath, temp, 300);
-        fprintf(stderr, "%s\n", temp);
+    if (S_ISLNK(statbuf.st_mode)) { //symbolic link
+        char temp[LEN_MAX];
+        int len = readlink(fullpath, temp, LEN_MAX);
+        temp[len] = '\0';
         file_size = strlen(temp);
         file_buffer = temp;
-        req.message.body.datalen = file_size;
-    } else {
+    } else { //regular file
         fd = open(fullpath, O_RDONLY);
-        file_size = get_size_by_fd(fd);
-        req.message.body.datalen = file_size;
+        file_size = statbuf.st_size;
         file_buffer = mmap(NULL, file_size, PROT_READ, MAP_SHARED , fd , 0);
     }
+    req.message.body.datalen = file_size;
     
     //send data length
     if (!send_message(client->conn_fd, &req, sizeof(req))) {
@@ -116,6 +113,7 @@ int process_file(csiebox_client* client, char *fullpath, struct stat statbuf) {
     }
     //send data
     send_message(client->conn_fd, file_buffer, file_size);
+    
     if (!S_ISLNK(statbuf.st_mode)) 
         munmap(file_buffer, file_size); 
 
@@ -126,7 +124,74 @@ int process_file(csiebox_client* client, char *fullpath, struct stat statbuf) {
         if (header.res.magic == CSIEBOX_PROTOCOL_MAGIC_RES &&
             header.res.op == CSIEBOX_PROTOCOL_OP_SYNC_FILE &&
             header.res.status == CSIEBOX_PROTOCOL_STATUS_OK) {
-            printf("Receive OK from server\n");
+            printf("file_Receive OK from server\n");
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}
+
+int process_Hardlink(csiebox_client* client, char *fullpath, char *targetpath) {
+    printf("process_Hardlink\n");
+    csiebox_protocol_hardlink req;
+    memset(&req, 0, sizeof(req));
+    req.message.header.req.magic = CSIEBOX_PROTOCOL_MAGIC_REQ;
+    req.message.header.req.op = CSIEBOX_PROTOCOL_OP_SYNC_HARDLINK;
+    req.message.header.req.datalen = sizeof(req) - sizeof(req.message.header);
+    req.message.body.srclen = strlen(fullpath+8);
+    req.message.body.targetlen = strlen(targetpath+8);
+    if (!send_message(client->conn_fd, &req, sizeof(req))) {
+        fprintf(stderr, "send fail\n");
+        return 0;
+    }
+
+    //send path
+    send_message(client->conn_fd, fullpath+8, req.message.body.srclen);
+    send_message(client->conn_fd, targetpath+8, req.message.body.targetlen);
+
+    //receive csiebox_protocol_header from server
+    csiebox_protocol_header header;
+    memset(&header, 0, sizeof(header));
+    if (recv_message(client->conn_fd, &header, sizeof(header))) {
+        if (header.res.magic == CSIEBOX_PROTOCOL_MAGIC_RES &&
+            header.res.op == CSIEBOX_PROTOCOL_OP_SYNC_HARDLINK &&
+            header.res.status == CSIEBOX_PROTOCOL_STATUS_OK) {
+            printf("hardlink_Receive OK from server\n");
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}
+
+int process_RM(csiebox_client* client, char *path) {
+    printf("process_RM\n");
+    printf("%s\n", path);
+    csiebox_protocol_rm req;
+    memset(&req, 0, sizeof(req));
+    req.message.header.req.magic = CSIEBOX_PROTOCOL_MAGIC_REQ;
+    req.message.header.req.op = CSIEBOX_PROTOCOL_OP_RM;
+    req.message.header.req.datalen = sizeof(req) - sizeof(req.message.header);
+    req.message.body.pathlen = strlen(path+8);
+
+    //send pathlen to server so that server can know how many charachers it should receive
+    if (!send_message(client->conn_fd, &req, sizeof(req))) {
+        fprintf(stderr, "send fail\n");
+        return 0;
+    }
+
+    //send path
+    send_message(client->conn_fd, path+8, req.message.body.pathlen);
+
+    //receive csiebox_protocol_header from server
+    csiebox_protocol_header header;
+    memset(&header, 0, sizeof(header));
+    if (recv_message(client->conn_fd, &header, sizeof(header))) {
+        if (header.res.magic == CSIEBOX_PROTOCOL_MAGIC_RES &&
+            header.res.op == CSIEBOX_PROTOCOL_OP_RM &&
+            header.res.status == CSIEBOX_PROTOCOL_STATUS_OK) {
+            printf("rm_Receive OK from server\n");
             return 1;
         } else {
             return 0;
@@ -134,10 +199,52 @@ int process_file(csiebox_client* client, char *fullpath, struct stat statbuf) {
     }
 }
  
+static int depth = 0;
+static char longestpath[LEN_MAX];
+static int num_inode = 0;
+static ino_t inode[FILE_MAX];
+static char inodepath[FILE_MAX][LEN_MAX];
+static char wd_path[FILE_MAX][LEN_MAX];
+static int wds[FILE_MAX];
+static int num_of_wds = 0;
+
+void put_into_wdpath(char *path, int wd) {
+    if (num_of_wds < FILE_MAX) {
+        wds[num_of_wds] = wd;
+        strcpy(wd_path[num_of_wds], path);
+        num_of_wds ++;
+    } else {
+        for (int i = 0; i < num_of_wds; i++) {
+            if (!wds[i]) {
+                wds[i] = wd;
+                strcpy(wd_path[i], path);
+                return;
+            }
+        }
+    }
+}
+void get_path_from_wd(char *path, int wd) {
+    for (int i = 0; i < num_of_wds; i++) {
+        if (wds[i] == wd) {
+            strcpy(path, wd_path[i]);
+            return;
+        }
+    }
+}
+void delete_wd(int wd) {
+    for (int i = 0; i < num_of_wds; i++) {
+        if (wds[i] == wd) {
+            wds[i] = 0;
+            wd_path[i][0] = '\0';
+            return;
+        }
+    }
+}
+
 //Descend through the hierarchy, starting at "fullpath". 
 //If "fullpath" is anything other than a directory, we lstat() it, 
 //cFor a directory, we call ourself *recursively for each name in the directory. 
-void dopath(csiebox_client* client, char *fullpath, int fd, hash* inotify_hash) {
+void dopath(csiebox_client* client, char *fullpath, int fd, int d) {
     struct stat statbuf;
     struct dirent *dirp;
     DIR *dp;
@@ -146,36 +253,54 @@ void dopath(csiebox_client* client, char *fullpath, int fd, hash* inotify_hash) 
     if (lstat(fullpath, &statbuf) < 0) {/* stat error */
         return;
     }
-    if (S_ISDIR(statbuf.st_mode) == 0) {/* not a directory */
-        printf("file: %s\n", fullpath);
-        process_Meta(client, fullpath, statbuf);
-        process_file(client, fullpath, statbuf);
-        return; //file or softlink
-    }
-    printf("dir: %s\n", fullpath);
-    n = strlen(fullpath);
-    process_Meta(client, fullpath, statbuf);
+    printf(": %s\n", fullpath);
 
+    //longest path
+    if (d > depth) {
+        depth = d;
+        strcpy(longestpath, fullpath);
+    }
+
+    if (statbuf.st_nlink > 1 && !S_ISDIR(statbuf.st_mode)) {
+        for (int i = 0; i < num_inode; i++) {
+            if (inode[i] == statbuf.st_ino) {
+                process_Hardlink(client, fullpath, inodepath[i]);
+                return;
+            }
+        }
+    }
+    inode[num_inode] = statbuf.st_ino;
+    strcpy(inodepath[num_inode], fullpath);
+    num_inode ++;
+
+    if (process_Meta(client, fullpath, statbuf) == 2) {
+        process_file(client, fullpath, statbuf); //not dir
+        return;
+    }
+   
+    n = strlen(fullpath);
     fullpath[n++] = '/';
     fullpath[n] = 0;
 
     if ((dp = opendir(fullpath)) == NULL) /* can't read directory */
         return;
 
-    wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE);
+    wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE | IN_ATTRIB);
     if (wd != -1) {
-        printf("Watching:: %s\n", fullpath);
-        //put_into_hash(inotify_hash, (void*)fullpath, wd);
+        printf("%d Watching:: %s\n", wd, fullpath);
+        put_into_wdpath(fullpath, wd);
     }
 
     while ((dirp = readdir(dp)) != NULL) {
         if (strcmp(dirp->d_name, ".") == 0 || strcmp(dirp->d_name, "..") == 0)
             continue; /* ignore dot and dot-dot */
         strcpy(&fullpath[n], dirp->d_name); /* append name after "/" */
-        dopath(client, fullpath, fd, inotify_hash);/* recursive */
+        dopath(client, fullpath, fd, d+1);/* recursive */
     }
-    fullpath[n-1] = 0; /* erase everything from slash onward */
-
+    fullpath[n] = 0; /* erase everything from slash onward */
+    lstat(fullpath, &statbuf);
+    printf("return: %s\n", fullpath);
+    process_Meta(client, fullpath, statbuf);
     closedir(dp);
 }
 
@@ -190,16 +315,21 @@ int csiebox_client_run(csiebox_client* client) {
     int length, i = 0;
     int fd;
     char buffer[EVENT_BUF_LEN];
-    hash inotify_hash;
-
-    //init_hash(&inotify_hash, 300);
+    
     fd = inotify_init();
     if ( fd < 0 ) {
         perror( "Couldn't initialize inotify");
     }
-    char fullpath[304] = "../cdir";
-    dopath(client, fullpath, fd, &inotify_hash);
+    char fullpath[LEN_MAX] = "../cdir";
+    dopath(client, fullpath, fd, 0);
 
+    int longestpath_fd = open("../cdir/longestPath.txt", O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
+    printf("longestpath: %s\n", longestpath);
+    write(longestpath_fd, longestpath, strlen(longestpath));
+    close(longestpath_fd);
+
+    struct stat statbuf;
+    int len;
     while (1) {
         i = 0;
         length = read( fd, buffer, EVENT_BUF_LEN);
@@ -211,27 +341,88 @@ int csiebox_client_run(csiebox_client* client) {
                 if ( event->mask & IN_CREATE) {
                     if (event->mask & IN_ISDIR) {
                         printf("%d DIR::%s CREATED\n", event->wd,event->name );
-                        int wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE);
+                        get_path_from_wd(fullpath, event->wd);
+                        len = strlen(fullpath);
+                        strcpy(fullpath+len, event->name);
+                        int wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE | IN_ATTRIB);
                         if (wd != -1) {
                             printf("Watching:: %s\n", fullpath);
-                            //put_into_hash(&inotify_hash, (void*)fullpath, wd);
+                            put_into_wdpath(fullpath, wd);
                         }
-                    } else
-                        printf("%d FILE::%s CREATED\n", event->wd, event->name);      
-                 }
-           
-                if ( event->mask & IN_MODIFY) {
-                    if (event->mask & IN_ISDIR)
-                        printf("%d DIR::%s MODIFIED\n", event->wd,event->name );      
-                    else
-                        printf("%d FILE::%s MODIFIED\n", event->wd,event->name );      
+                        lstat(fullpath, &statbuf);
+                        process_Meta(client, fullpath, statbuf);
+                        fullpath[len] = '\0';
+                        lstat(fullpath, &statbuf);
+                        process_Meta(client, fullpath, statbuf);
+                    } else {
+                        printf("%d FILE::%s CREATED\n", event->wd, event->name);   
+                        get_path_from_wd(fullpath, event->wd);
+                        len = strlen(fullpath);
+                        strcpy(fullpath+len, event->name);
+                        lstat(fullpath, &statbuf);
+                        if (process_Meta(client, fullpath, statbuf) == 2)
+                            process_file(client, fullpath, statbuf);
+                        fullpath[len] = '\0';
+                        lstat(fullpath, &statbuf);
+                        process_Meta(client, fullpath, statbuf);
+                    }
                 }
-           
+                if (event->mask & IN_ATTRIB) {
+                    if (event->mask & IN_ISDIR) {
+                        printf("%d DIR::%s ATTRIB\n", event->wd,event->name );  
+                        get_path_from_wd(fullpath, event->wd);
+                        len = strlen(fullpath);
+                        strcpy(fullpath+len, event->name);
+                        lstat(fullpath, &statbuf);
+                        process_Meta(client, fullpath, statbuf);
+                    }
+                    else {
+                        printf("%d FILE::%s ATTRIB\n", event->wd,event->name );
+                        get_path_from_wd(fullpath, event->wd);
+                        len = strlen(fullpath);
+                        strcpy(fullpath+len, event->name);
+                        lstat(fullpath, &statbuf);
+                        process_Meta(client, fullpath, statbuf);
+                    }
+                }
+                if ( event->mask & IN_MODIFY) {
+                    if (event->mask & IN_ISDIR) {
+                        printf("%d DIR::%s MODIFIED\n", event->wd,event->name );      
+                    }
+                    else {
+                        printf("%d FILE::%s MODIFIED\n", event->wd,event->name );
+                        get_path_from_wd(fullpath, event->wd);
+                        len = strlen(fullpath);
+                        strcpy(fullpath+len, event->name);
+                        lstat(fullpath, &statbuf);
+                        if (process_Meta(client, fullpath, statbuf) == 2)
+                            process_file(client, fullpath, statbuf);
+                        fullpath[len] = '\0';
+                        lstat(fullpath, &statbuf);
+                        process_Meta(client, fullpath, statbuf);    
+                    }
+                }
+                if ( event->mask & IN_DELETE_SELF) {
+                    printf("%d DIR::%s DELETED\n", event->wd,event->name );
+                    fprintf(stderr, "QQQ\n");
+                    delete_wd(event->wd);
+                    inotify_rm_watch(fd, event->wd);
+                }
                 if ( event->mask & IN_DELETE) {
-                    if (event->mask & IN_ISDIR)
-                        printf("%d DIR::%s DELETED\n", event->wd,event->name );      
-                    else
-                        printf("%d FILE::%s DELETED\n", event->wd,event->name );      
+                    if (event->mask & IN_ISDIR) {
+                        printf("%d DIR::%s DELETED\n", event->wd,event->name );
+                        fprintf(stderr, "WWW\n");
+                    }
+                    else {
+                        printf("%d FILE::%s DELETED\n", event->wd,event->name );
+                        get_path_from_wd(fullpath, event->wd);
+                        len = strlen(fullpath);
+                        strcpy(fullpath+len, event->name);
+                        process_RM(client, fullpath);
+                        fullpath[len] = '\0';
+                        lstat(fullpath, &statbuf);
+                        process_Meta(client, fullpath, statbuf);
+                    }
                 }
                 i += EVENT_SIZE + event->len;
             }

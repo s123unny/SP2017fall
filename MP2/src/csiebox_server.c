@@ -8,12 +8,17 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <utime.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <dirent.h>
+
+#define LEN_MAX 316
+#define DATA_MAX 4004
 
 static int parse_arg(csiebox_server* server, int argc, char** argv);
 static void handle_request(csiebox_server* server, int conn_fd);
@@ -153,7 +158,11 @@ static int parse_arg(csiebox_server* server, int argc, char** argv) {
   return 1;
 }
 
-char file_name[304];
+char* homedir;
+char file_name[LEN_MAX];
+struct timeval new_times[2];
+struct utimbuf new_time;
+int new_sym = 0, synctime = 0;
 
 int process_rec_META(int conn_fd, csiebox_protocol_meta* meta) {
   csiebox_protocol_header header;
@@ -163,29 +172,46 @@ int process_rec_META(int conn_fd, csiebox_protocol_meta* meta) {
   header.res.datalen = 0;
 
   //use the pathlen from client to recv path 
-  char buf[400];
+  char buf[LEN_MAX];
   memset(buf, 0, sizeof(buf));
-  strcpy(buf, "../sdir/user/");
-  recv_message(conn_fd, buf+13, meta->message.body.pathlen);
+  strcpy(buf, homedir);
+  int len = strlen(buf);
+  recv_message(conn_fd, buf+len, meta->message.body.pathlen);
   strcpy(file_name, buf);
-  if (S_ISDIR(meta->message.body.stat.st_mode)) {
-    DIR *dp = opendir(buf);
-    if (dp == NULL) {
-      mkdir(buf, meta->message.body.stat.st_mode);
-    }
-    header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
+
+  if (S_ISLNK(meta->message.body.stat.st_mode)) { //symbolic link
+    new_sym = 1;
+    header.res.status = CSIEBOX_PROTOCOL_STATUS_MORE;
+    new_times[0].tv_sec = meta->message.body.stat.st_atime;
+    new_times[1].tv_sec = meta->message.body.stat.st_mtime;
   } else {
-    int fd = open(buf, O_WRONLY | O_CREAT | O_TRUNC, meta->message.body.stat.st_mode);
-    if (fd < 0) printf("-1\n");
-    close(fd);
-    uint8_t hash[MD5_DIGEST_LENGTH];
-    memset(&hash, 0, sizeof(hash));
-    md5_file(buf, hash);
-    if (memcmp(hash, meta->message.body.hash, strlen(hash)) == 0) {
+    if (S_ISDIR(meta->message.body.stat.st_mode)) { //directory
+      DIR *dp = opendir(buf);
+      if (dp == NULL) {
+        mkdir(buf, meta->message.body.stat.st_mode);
+      }
       header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
-    } else {
-      header.res.status = CSIEBOX_PROTOCOL_STATUS_MORE;
+    } else  {//regular file
+      int fd = open(buf, O_WRONLY | O_CREAT | O_TRUNC, meta->message.body.stat.st_mode);
+      if (fd < 0) printf("-1\n");
+      close(fd);
+      uint8_t hash[MD5_DIGEST_LENGTH];
+      memset(&hash, 0, sizeof(hash));
+      md5_file(buf, hash);
+      if (memcmp(hash, meta->message.body.hash, sizeof(hash)) == 0) {
+        header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
+      } else {
+        header.res.status = CSIEBOX_PROTOCOL_STATUS_MORE;
+        synctime = 1;
+      }
     }
+    //sync atime/mtime
+    new_time.actime = meta->message.body.stat.st_atime;
+    new_time.modtime = meta->message.body.stat.st_mtime;
+    if (!synctime) {
+      utime(buf, &new_time);
+    }
+    chmod(buf, meta->message.body.stat.st_mode);
   }
   printf("This is the path from client:%s\n", buf);
 
@@ -198,20 +224,89 @@ int process_rec_META(int conn_fd, csiebox_protocol_meta* meta) {
 }
 int process_rec_FILE(int conn_fd, csiebox_protocol_file* file) {
   //use the pathlen from client to recv path 
-  char buf[4004];
+  char buf[DATA_MAX];
   memset(buf, 0, sizeof(buf));
   recv_message(conn_fd, buf, file->message.body.datalen);
   
   //write in file
-  int fd = open(file_name, O_WRONLY);
-  if (fd < 0) printf("-2\n");
-  write(fd, buf, file->message.body.datalen);
-  close(fd);
+  if (new_sym) {
+    symlink(buf, file_name);
+    lutimes(file_name, new_times);
+    new_sym = 0;
+  } else {
+    int fd = open(file_name, O_WRONLY);
+    if (fd < 0) printf("-2\n");
+    write(fd, buf, file->message.body.datalen);
+    close(fd);
+    //sync time
+    utime(file_name, &new_time);
+    synctime = 0;
+  }
   //send OK to client
   csiebox_protocol_header header;
   memset(&header, 0, sizeof(header));
   header.res.magic = CSIEBOX_PROTOCOL_MAGIC_RES;
   header.res.op = CSIEBOX_PROTOCOL_OP_SYNC_FILE;
+  header.res.datalen = 0;
+  header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
+
+  if(!send_message(conn_fd, &header, sizeof(header))){
+    fprintf(stderr, "send fail\n");
+    return 0;
+  }
+  return 1;
+}
+int process_rec_HARDLINK(int conn_fd, csiebox_protocol_hardlink* hardlink) {
+  //use the pathlen from client to recv path
+  char srcpath[LEN_MAX];
+  memset(srcpath, 0, sizeof(srcpath));
+  strcpy(srcpath, homedir);
+  int len = strlen(srcpath);
+  recv_message(conn_fd, srcpath+len, hardlink->message.body.srclen);
+  char targetpath[LEN_MAX];
+  memset(targetpath, 0, sizeof(targetpath));
+  strcpy(targetpath, homedir);
+  recv_message(conn_fd, targetpath+len, hardlink->message.body.targetlen);
+
+  link(targetpath, srcpath);
+
+  //send OK to client
+  csiebox_protocol_header header;
+  memset(&header, 0, sizeof(header));
+  header.res.magic = CSIEBOX_PROTOCOL_MAGIC_RES;
+  header.res.op = CSIEBOX_PROTOCOL_OP_SYNC_HARDLINK;
+  header.res.datalen = 0;
+  header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
+
+  if(!send_message(conn_fd, &header, sizeof(header))){
+    fprintf(stderr, "send fail\n");
+    return 0;
+  }
+  return 1;
+}
+int process_rec_RM(int conn_fd, csiebox_protocol_rm* rm) {
+  //use the pathlen from client to recv path
+  char path[LEN_MAX];
+  memset(path, 0, sizeof(path));
+  strcpy(path, homedir);
+  int len = strlen(path);
+  recv_message(conn_fd, path+len, rm->message.body.pathlen);
+  printf("%s\n", path);
+
+  struct stat statbuf;
+  if (lstat(path, &statbuf) >= 0) {
+    if (S_ISDIR(statbuf.st_mode)) {
+      rmdir(path);
+    } else {
+      remove(path);
+    }
+  }
+
+  //send OK to client
+  csiebox_protocol_header header;
+  memset(&header, 0, sizeof(header));
+  header.res.magic = CSIEBOX_PROTOCOL_MAGIC_RES;
+  header.res.op = CSIEBOX_PROTOCOL_OP_RM;
   header.res.datalen = 0;
   header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
 
@@ -256,9 +351,7 @@ static void handle_request(csiebox_server* server, int conn_fd) {
         fprintf(stderr, "sync hardlink\n");
         csiebox_protocol_hardlink hardlink;
         if (complete_message_with_header(conn_fd, &header, &hardlink)) {
-          //====================
-          //        TODO
-          //====================
+          process_rec_HARDLINK(conn_fd, &hardlink);
         }
         break;
       case CSIEBOX_PROTOCOL_OP_SYNC_END:
@@ -272,9 +365,7 @@ static void handle_request(csiebox_server* server, int conn_fd) {
         fprintf(stderr, "rm\n");
         csiebox_protocol_rm rm;
         if (complete_message_with_header(conn_fd, &header, &rm)) {
-          //====================
-          //        TODO
-          //====================
+          process_rec_RM(conn_fd, &rm);
         }
         break;
       default:
@@ -356,9 +447,12 @@ static void login(
     server->client[conn_fd] = info;
     header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
     header.res.client_id = info->conn_fd;
-    char* homedir = get_user_homedir(server, info);
+    homedir = get_user_homedir(server, info);
+    printf("###%s\n", homedir);
     mkdir(homedir, DIR_S_FLAG);
-    free(homedir);
+    int len = strlen(homedir);
+    homedir[len] = '/';
+    homedir[len+1] = '\0';
   } else {
     header.res.status = CSIEBOX_PROTOCOL_STATUS_FAIL;
     free(info);
