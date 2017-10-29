@@ -192,7 +192,7 @@ int process_rec_META(int conn_fd, csiebox_protocol_meta* meta) {
       }
       header.res.status = CSIEBOX_PROTOCOL_STATUS_OK;
     } else  {//regular file
-      int fd = open(buf, O_WRONLY | O_CREAT | O_TRUNC, meta->message.body.stat.st_mode);
+      int fd = open(buf, O_WRONLY | O_CREAT, meta->message.body.stat.st_mode);
       if (fd < 0) printf("-1\n");
       close(fd);
       uint8_t hash[MD5_DIGEST_LENGTH];
@@ -208,6 +208,7 @@ int process_rec_META(int conn_fd, csiebox_protocol_meta* meta) {
     //sync atime/mtime
     new_time.actime = meta->message.body.stat.st_atime;
     new_time.modtime = meta->message.body.stat.st_mtime;
+    printf("%d\n", synctime);
     if (!synctime) {
       utime(buf, &new_time);
     }

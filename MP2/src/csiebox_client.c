@@ -52,7 +52,7 @@ int process_Meta(csiebox_client* client, char* path, struct stat statbuf) {
     req.message.header.req.datalen = sizeof(req) - sizeof(req.message.header);
     req.message.body.pathlen = strlen(path+8);
     req.message.body.stat = statbuf;
-    if (!S_ISDIR(statbuf.st_mode))md5_file(path, req.message.body.hash);
+    if (!S_ISDIR(statbuf.st_mode) && !S_ISLNK(statbuf.st_mode))md5_file(path, req.message.body.hash);
 
     //send pathlen to server so that server can know how many charachers it should receive
     if (!send_message(client->conn_fd, &req, sizeof(req))) {
@@ -256,7 +256,7 @@ void dopath(csiebox_client* client, char *fullpath, int fd, int d) {
     printf(": %s\n", fullpath);
 
     //longest path
-    if (d > depth) {
+    if (d > depth && !S_ISLNK(statbuf.st_mode)) {
         depth = d;
         strcpy(longestpath, fullpath);
     }
@@ -269,12 +269,12 @@ void dopath(csiebox_client* client, char *fullpath, int fd, int d) {
             }
         }
     }
-    inode[num_inode] = statbuf.st_ino;
-    strcpy(inodepath[num_inode], fullpath);
-    num_inode ++;
 
     if (process_Meta(client, fullpath, statbuf) == 2) {
         process_file(client, fullpath, statbuf); //not dir
+        inode[num_inode] = statbuf.st_ino;
+        strcpy(inodepath[num_inode], fullpath);
+        num_inode ++;
         return;
     }
    
@@ -285,7 +285,7 @@ void dopath(csiebox_client* client, char *fullpath, int fd, int d) {
     if ((dp = opendir(fullpath)) == NULL) /* can't read directory */
         return;
 
-    wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE | IN_ATTRIB);
+    wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE | IN_ATTRIB | IN_DELETE_SELF);
     if (wd != -1) {
         printf("%d Watching:: %s\n", wd, fullpath);
         put_into_wdpath(fullpath, wd);
@@ -330,102 +330,108 @@ int csiebox_client_run(csiebox_client* client) {
 
     struct stat statbuf;
     int len;
-    while (1) {
+    while ((length = read( fd, buffer, EVENT_BUF_LEN)) > 0) {
         i = 0;
-        length = read( fd, buffer, EVENT_BUF_LEN);
-
         /* Read the events*/
         while ( i < length ) {
             struct inotify_event *event = ( struct inotify_event * ) &buffer[ i ];
-            if ( event->len ) {
-                if ( event->mask & IN_CREATE) {
-                    if (event->mask & IN_ISDIR) {
-                        printf("%d DIR::%s CREATED\n", event->wd,event->name );
-                        get_path_from_wd(fullpath, event->wd);
-                        len = strlen(fullpath);
-                        strcpy(fullpath+len, event->name);
-                        int wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE | IN_ATTRIB);
-                        if (wd != -1) {
-                            printf("Watching:: %s\n", fullpath);
-                            put_into_wdpath(fullpath, wd);
-                        }
-                        lstat(fullpath, &statbuf);
-                        process_Meta(client, fullpath, statbuf);
-                        fullpath[len] = '\0';
-                        lstat(fullpath, &statbuf);
-                        process_Meta(client, fullpath, statbuf);
-                    } else {
-                        printf("%d FILE::%s CREATED\n", event->wd, event->name);   
-                        get_path_from_wd(fullpath, event->wd);
-                        len = strlen(fullpath);
-                        strcpy(fullpath+len, event->name);
-                        lstat(fullpath, &statbuf);
-                        if (process_Meta(client, fullpath, statbuf) == 2)
-                            process_file(client, fullpath, statbuf);
-                        fullpath[len] = '\0';
-                        lstat(fullpath, &statbuf);
-                        process_Meta(client, fullpath, statbuf);
+            fprintf(stderr, "-------------------\n");
+            if ( event->mask & IN_CREATE) {
+                if (event->mask & IN_ISDIR) {
+                    printf("%d DIR::%s CREATED\n", event->wd,event->name );
+                    get_path_from_wd(fullpath, event->wd);
+                    len = strlen(fullpath);
+                    strcpy(fullpath+len, event->name);
+                    strcat(fullpath, "/");
+                    int wd = inotify_add_watch(fd, fullpath, IN_CREATE | IN_MODIFY | IN_DELETE | IN_ATTRIB | IN_DELETE_SELF);
+                    if (wd != -1) {
+                        printf("Watching:: %s\n", fullpath);
+                        put_into_wdpath(fullpath, wd);
                     }
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);
+                    fullpath[len] = '\0';
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);
+                } else {
+                    printf("%d FILE::%s CREATED\n", event->wd, event->name);   
+                    get_path_from_wd(fullpath, event->wd);
+                    len = strlen(fullpath);
+                    strcpy(fullpath+len, event->name);
+                    lstat(fullpath, &statbuf);
+                    if (process_Meta(client, fullpath, statbuf) == 2)
+                        process_file(client, fullpath, statbuf);
+                    fullpath[len] = '\0';
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);
                 }
-                if (event->mask & IN_ATTRIB) {
-                    if (event->mask & IN_ISDIR) {
-                        printf("%d DIR::%s ATTRIB\n", event->wd,event->name );  
-                        get_path_from_wd(fullpath, event->wd);
-                        len = strlen(fullpath);
-                        strcpy(fullpath+len, event->name);
-                        lstat(fullpath, &statbuf);
-                        process_Meta(client, fullpath, statbuf);
-                    }
-                    else {
-                        printf("%d FILE::%s ATTRIB\n", event->wd,event->name );
-                        get_path_from_wd(fullpath, event->wd);
-                        len = strlen(fullpath);
-                        strcpy(fullpath+len, event->name);
-                        lstat(fullpath, &statbuf);
-                        process_Meta(client, fullpath, statbuf);
-                    }
-                }
-                if ( event->mask & IN_MODIFY) {
-                    if (event->mask & IN_ISDIR) {
-                        printf("%d DIR::%s MODIFIED\n", event->wd,event->name );      
-                    }
-                    else {
-                        printf("%d FILE::%s MODIFIED\n", event->wd,event->name );
-                        get_path_from_wd(fullpath, event->wd);
-                        len = strlen(fullpath);
-                        strcpy(fullpath+len, event->name);
-                        lstat(fullpath, &statbuf);
-                        if (process_Meta(client, fullpath, statbuf) == 2)
-                            process_file(client, fullpath, statbuf);
-                        fullpath[len] = '\0';
-                        lstat(fullpath, &statbuf);
-                        process_Meta(client, fullpath, statbuf);    
-                    }
-                }
-                if ( event->mask & IN_DELETE_SELF) {
-                    printf("%d DIR::%s DELETED\n", event->wd,event->name );
-                    fprintf(stderr, "QQQ\n");
-                    delete_wd(event->wd);
-                    inotify_rm_watch(fd, event->wd);
-                }
-                if ( event->mask & IN_DELETE) {
-                    if (event->mask & IN_ISDIR) {
-                        printf("%d DIR::%s DELETED\n", event->wd,event->name );
-                        fprintf(stderr, "WWW\n");
-                    }
-                    else {
-                        printf("%d FILE::%s DELETED\n", event->wd,event->name );
-                        get_path_from_wd(fullpath, event->wd);
-                        len = strlen(fullpath);
-                        strcpy(fullpath+len, event->name);
-                        process_RM(client, fullpath);
-                        fullpath[len] = '\0';
-                        lstat(fullpath, &statbuf);
-                        process_Meta(client, fullpath, statbuf);
-                    }
-                }
-                i += EVENT_SIZE + event->len;
             }
+            if (event->mask & IN_ATTRIB) {
+                if (event->mask & IN_ISDIR) {
+                    printf("%d DIR::%s ATTRIB\n", event->wd,event->name );  
+                    get_path_from_wd(fullpath, event->wd);
+                    len = strlen(fullpath);
+                    strcpy(fullpath+len, event->name);
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);
+                }
+                else {
+                    printf("%d FILE::%s ATTRIB\n", event->wd,event->name );
+                    get_path_from_wd(fullpath, event->wd);
+                    len = strlen(fullpath);
+                    strcpy(fullpath+len, event->name);
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);
+                }
+            }
+            if ( event->mask & IN_MODIFY) {
+                if (event->mask & IN_ISDIR) {
+                    printf("%d DIR::%s MODIFIED\n", event->wd,event->name );      
+                }
+                else {
+                    printf("%d FILE::%s MODIFIED\n", event->wd,event->name );
+                    get_path_from_wd(fullpath, event->wd);
+                    len = strlen(fullpath);
+                    strcpy(fullpath+len, event->name);
+                    lstat(fullpath, &statbuf);
+                    if (process_Meta(client, fullpath, statbuf) == 2)
+                        process_file(client, fullpath, statbuf);
+                    fullpath[len] = '\0';
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);    
+                }
+            }
+            if ( event->mask & IN_DELETE_SELF) {
+                fprintf(stderr, "QQQ\n");
+                printf("%d DIR::%s DELETED\n", event->wd,event->name );
+                delete_wd(event->wd);
+                inotify_rm_watch(fd, event->wd);
+            }
+            if ( event->mask & IN_DELETE) {
+                if (event->mask & IN_ISDIR) {
+                    fprintf(stderr, "WWW\n");
+                    printf("%d DIR::%s DELETED\n", event->wd,event->name );
+                    get_path_from_wd(fullpath, event->wd);
+                    len = strlen(fullpath);
+                    strcpy(fullpath+len, event->name);
+                    process_RM(client, fullpath);
+                    fullpath[len] = '\0';
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);
+                }
+                else {
+                    fprintf(stderr, "XXX\n");
+                    printf("%d FILE::%s DELETED\n", event->wd,event->name );
+                    get_path_from_wd(fullpath, event->wd);
+                    len = strlen(fullpath);
+                    strcpy(fullpath+len, event->name);
+                    process_RM(client, fullpath);
+                    fullpath[len] = '\0';
+                    lstat(fullpath, &statbuf);
+                    process_Meta(client, fullpath, statbuf);
+                }
+            }
+            i += EVENT_SIZE + event->len;
         }
     }
     close(fd);
