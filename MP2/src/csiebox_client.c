@@ -402,14 +402,12 @@ int csiebox_client_run(csiebox_client* client) {
                 }
             }
             if ( event->mask & IN_DELETE_SELF) {
-                fprintf(stderr, "QQQ\n");
-                printf("%d DIR::%s DELETED\n", event->wd,event->name );
+                printf("%d DIR:: DELETED_SELF\n", event->wd,event->name );
                 delete_wd(event->wd);
                 inotify_rm_watch(fd, event->wd);
             }
             if ( event->mask & IN_DELETE) {
                 if (event->mask & IN_ISDIR) {
-                    fprintf(stderr, "WWW\n");
                     printf("%d DIR::%s DELETED\n", event->wd,event->name );
                     get_path_from_wd(fullpath, event->wd);
                     len = strlen(fullpath);
@@ -420,7 +418,6 @@ int csiebox_client_run(csiebox_client* client) {
                     process_Meta(client, fullpath, statbuf);
                 }
                 else {
-                    fprintf(stderr, "XXX\n");
                     printf("%d FILE::%s DELETED\n", event->wd,event->name );
                     get_path_from_wd(fullpath, event->wd);
                     len = strlen(fullpath);
