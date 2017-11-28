@@ -4,7 +4,7 @@
 CC=gcc
 
 # place options like -O2, -g here
-CFLAGS=
+CFLAGS=-O2 -lbsd
 
 all: miner
 
