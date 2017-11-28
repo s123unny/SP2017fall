@@ -220,10 +220,10 @@ int main(int argc, char **argv)
     assert (!ret);
 
     /* open pipes */
-    int input_fd = open(input_pipe, O_RDONLY);
+    int input_fd = open(input_pipe, O_RDWR);
     assert (input_fd >= 0);
 
-    int output_fd = open(output_pipe, O_WRONLY);
+    int output_fd = open(output_pipe, O_RDWR);
     assert (output_fd >= 0);
     //setbuf(output_fd, NULL);
 
