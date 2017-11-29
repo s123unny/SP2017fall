@@ -5,7 +5,6 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-// #include <bsd/md5.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <openssl/md5.h>
@@ -14,13 +13,12 @@
 
 #define max(a,b) (a > b? a:b)
 
-void MD5_generator(const char string[], char md5string[33])
+void MD5_generator(const char string[], char md5string[33], unsigned long len)
 {
     unsigned char result[MD5_DIGEST_LENGTH];
     const unsigned char* str_buffer = string;
-    unsigned long str_size = strlen(string);
     
-    MD5(str_buffer, str_size, result);
+    MD5(str_buffer, len, result);
     for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
         sprintf(&md5string[i*2], "%02x", (unsigned int)result[i]);
     }
@@ -91,6 +89,8 @@ int assign_jobs(int num, struct fd_pair client_fds[], struct result *current)
 int handle_command(int num, struct fd_pair client_fds[], struct result *current)
 {
     /* TODO parse user commands here */
+    static int fd, len;
+    static char *ptr;
     char cmd[8], type, path[100];
     scanf("%s", cmd);
 
@@ -106,9 +106,8 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
     } else if (strcmp(cmd, "dump") == 0) {
         /* TODO write best n-treasure to specified file */
         scanf("%s", path);
-        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-        write(fd, current->string, current->len-1);
-        close(fd);
+        fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        len = current->len - 1;
     } else {
         assert(strcmp(cmd, "quit") == 0);
         /* TODO tell clients to cease their jobs and exit normally */
@@ -118,6 +117,7 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
             type = 'q';
             write(client_fds[i].input_fd, &type, sizeof(char));
         }
+        write(fd, current->string, len);
         for (int ind = 0; ind < num; ind ++) {
             close(client_fds[ind].input_fd);
             close(client_fds[ind].output_fd);
@@ -179,11 +179,16 @@ int main(int argc, char **argv)
     memset(current.string, 0, sizeof(current.string));
     read(mine_fd, current.string, file_size);
     fprintf(stderr, "www%swww\n", current.string);
-    if (strcmp(current.string, "B05902005") != 0) return 0;
+    // if (strcmp(current.string, "B05902005") != 0) return 0;
     fprintf(stderr, "qqq\n");
-    current.num = 0;
-    current.len = strlen(current.string) + 1;
-    MD5_generator(current.string, current.md5);
+    current.len = file_size + 1;
+    MD5_generator(current.string, current.md5, file_size);
+
+    for (current.num = 0; current.num < 33; current.num++) {
+        if (current.md5[current.num] != '0') {
+            break;
+        }
+    }
     // struct MD5Context context;
     // MD5Init(&context);
     // MD5Update(&context, current.string, current.len-1);
