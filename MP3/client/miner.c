@@ -7,7 +7,6 @@
 #include <bsd/md5.h>
 #include <fcntl.h>
 #include <string.h>
-#define QMAX 100000
 
 struct workinginfo
 {
@@ -15,39 +14,6 @@ struct workinginfo
     char hash[33];
     int num, len;
 };
-unsigned char queue[QMAX][20];
-int queue_len[QMAX];
-int front, rear, amount;
-void push_queue(unsigned char *element, int len)
-{
-    if (amount + 1 == QMAX) {
-        fprintf(stderr, "Queue Overflow\n");
-        return;
-    } 
-    if (rear == QMAX-1) {
-        if (front) {
-            rear = 0;
-        }
-    } else {
-        if(front == -1) 
-            front = 0;
-        rear ++;
-    }
-    queue_len[rear] = len;
-    strcpy(queue[rear], element);
-    amount ++;
-}
-void pop_queue(unsigned char *pop_item, int *len)
-{
-    if (!amount) {
-        fprintf(stderr, "Queue Underflow\n");
-    }
-    strcpy(pop_item, queue[front]);
-    *len = queue_len[front];
-    front ++;
-    amount --;
-    return;
-}
 
 int process_select(fd_set working_readset, int input_fd, struct workinginfo *working)
 {   
@@ -81,7 +47,10 @@ int process_select(fd_set working_readset, int input_fd, struct workinginfo *wor
             read(input_fd, &working->from, sizeof(char));
             read(input_fd, &working->to, sizeof(char));
             fprintf(stderr, "%d %s %x %x\n", working->num, working->basic, working->from, working->to);
-            fprintf(stderr, "%d %x\n", strlen(working->basic), working->basic[len2-2]);
+            for (int i = 0; i < working->len; i++) {
+                fprintf(stderr, "%x ", working->basic[i]);
+            }
+            fprintf(stderr, "\n");
             return 1;
         } else { //print
             fprintf(stderr, "print data %c#\n", type);
@@ -90,110 +59,98 @@ int process_select(fd_set working_readset, int input_fd, struct workinginfo *wor
             memset(data, 0, sizeof(data));
             read(input_fd, data, sizeof(char) * len);
             printf("%s\n", data);
+            process_select(working_readset, input_fd, working);
+            return 1;
         }
     }
     return 0;
 }
-void process_working(fd_set readset, int input_fd, int output_fd, struct workinginfo *working, char *name)
+int process_working(fd_set readset, int input_fd, int output_fd, struct workinginfo *working, char *name)
 {
+    fprintf(stderr, "start process working\n");
     int maxfd = input_fd + 1;
     fd_set working_readset;
     struct timeval timeout;
     timeout.tv_sec = 0;
-    timeout.tv_usec = 50;
+    timeout.tv_usec = 0;
 
     char md5string[33];
-    unsigned char result[16], temp[2], pop_item[20];
-    int len, no, flag;
-    memset(temp, 0, sizeof(temp));
-    memset(pop_item, 0, sizeof(pop_item));
+    // unsigned char result[16], temp[2], pop_item[20];
+    // int len, no, flag;
+    // memset(temp, 0, sizeof(temp));
+    // memset(pop_item, 0, sizeof(pop_item));
+
+    int now, len = 2, no, flag, count = 0;
+    unsigned char add[30], result[16];
+    memset(add, 0, sizeof(add));
+    add[0] = working->from;
+    struct MD5Context context, new;
+    MD5Init(&context);
+    MD5Update(&context, working->basic, working->len-1);
     while (1) {
-        front = -1; rear = -1; amount = 0;
-        struct MD5Context context, copy;
-        MD5Init(&context);
-        MD5Update(&context, working->basic, strlen(working->basic));
-        // MD5Update(&context, working->basic, working->len-1);
-        for (unsigned char i = working->from; i < working->to; i++) {
-            // fprintf(stderr, "%x\n", i);
-            copy = context;
-            temp[0] = i;
-            MD5Update(&copy, temp, 1);
-            MD5Final(result, &copy);
-            for(int j = 0; j < MD5_DIGEST_LENGTH; j++) {
-                sprintf(&md5string[j*2], "%02x", (unsigned int)result[j]);
-            }
-            no = 0;
+        new = context;
+        MD5Update(&new, add, len-1);
+        MD5Final(result, &new);
+        for(int j = 0; j < MD5_DIGEST_LENGTH; j++) {
+            sprintf(&md5string[j*2], "%02x", (unsigned int)result[j]);
+        }
+        no = 0;
+        if (md5string[working->num] == '0') {
+            no = 1;
+        } else {
             for (int j = 0; j < working->num; j++) {
                 if (md5string[j] != '0') {
                     no = 1;
                     break;
                 }
             }
-            if (!no) {
-                //write print
-                len = 2;
-                write(output_fd, &len, sizeof(int));
-                write(output_fd, temp, len);
-                write(output_fd, md5string, 33);
-                len = strlen(name) + 1;
-                write(output_fd, &len, sizeof(int));
-                write(output_fd, name, len);
-                fprintf(stderr, "#I win a %d-treasure! %s\n", working->num, md5string);
-                printf("I win a %d-treasure! %s\n", working->num, md5string);
-                return;
+        }
+        if (!no) {
+            //write print
+            write(output_fd, &len, sizeof(int));
+            write(output_fd, add, len);
+            fprintf(stderr, "%x %x %d\n", add[0], add[1], len);
+            write(output_fd, md5string, 33);
+            len = strlen(name) + 1;
+            write(output_fd, &len, sizeof(int));
+            write(output_fd, name, len);
+            fprintf(stderr, "#I win a %d-treasure! %s\n", working->num, md5string);
+            printf("I win a %d-treasure! %s\n", working->num, md5string);
+            return 1;
+        }
+        count ++;
+        if (count == 32) {
+            memcpy(&working_readset, &readset, sizeof(readset));
+            select(maxfd, &working_readset, NULL, NULL, &timeout);
+            strcpy(working->hash, md5string);
+            flag = process_select(working_readset, input_fd, working);
+            if (flag == 2) {
+                fprintf(stderr, "return\n");
+                return 2;
+            } else if (flag == 1) {
+                return 0;
             }
-            push_queue(temp, 1);
+            count = 0;
         }
-        memcpy(&working_readset, &readset, sizeof(readset));
-        select(maxfd, &working_readset, NULL, NULL, &timeout);
-        strcpy(working->hash, md5string);
-        flag = process_select(working_readset, input_fd, working);
-        if (flag > 0) {
-            fprintf(stderr, "return 1\n");
-            return;
+        for (now = len - 2; now > 0; now--) {
+            if (add[now] != 0xff) {
+                add[now] ++;
+                for (int i = now + 1; i < len-1; i++) {
+                    add[i] = 0;
+                }
+                break;
+            }
         }
-        fprintf(stderr, "amount: %d\n", amount);
-        while (amount > 0) {
-            pop_queue(pop_item, &len);
-            for (unsigned char i = 0; i < 255; i++) {
-                copy = context;
-                pop_item[len] = i;
-                // fprintf(stderr, "%d %x\n", len, i);
-                MD5Update(&copy, pop_item, len + 1);
-                MD5Final(result, &copy);
-                for(int j = 0; j < MD5_DIGEST_LENGTH; j++) {
-                    sprintf(&md5string[j*2], "%02x", (unsigned int)result[j]);
-                }
-                no = 0;
-                for (int j = 0; j < working->num; j++) {
-                    if (md5string[j] != '0') {
-                        no = 1;
-                        break;
-                    }
-                }
-                if (!no) {
-                    //write print
-                    len += 2;
-                    write(output_fd, &len, sizeof(int));
-                    write(output_fd, pop_item, len);
-                    write(output_fd, md5string, 33);
-                    len = strlen(name) + 1;
-                    write(output_fd, &len, sizeof(int));
-                    write(output_fd, name, len);
-                    printf("I win a %d-treasure! %s\n", working->num, md5string);
-                    fprintf(stderr, "I win a %d-treasure! %s\n", working->num, md5string);
-                    return;
-                }
-                if ((i % '\x20') == '\x1f') {
-                    memcpy(&working_readset, &readset, sizeof(readset));
-                    select(maxfd, &working_readset, NULL, NULL, &timeout);
-                    strcpy(working->hash, md5string);
-                    flag = process_select(working_readset, input_fd, working);
-                    if (flag > 0) {
-                        return;
-                    }
-                }
-                push_queue(pop_item, len + 1);
+        if (!now) {
+            if (add[0] != working->to) {
+                add[0] ++;
+            } else {
+                add[0] = working->from;
+                len ++;
+                fprintf(stderr, "next len %d\n", len);
+            }
+            for (int i = 1; i < len-1; i++) {
+                add[i] = 0;
             }
         }
     }
@@ -248,9 +205,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "waiting\n");
         memcpy(&working_readset, &readset, sizeof(readset));
         select(maxfd, &working_readset, NULL, NULL, NULL);
-        process_select(working_readset, input_fd, &working);
-
-        process_working(readset, input_fd, output_fd, &working, name);
+        if (process_select(working_readset, input_fd, &working) == 2) {
+            continue;
+        }
+        while (!process_working(readset, input_fd, output_fd, &working, name)) {}
     }
 
     return 0;
