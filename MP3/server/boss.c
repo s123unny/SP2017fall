@@ -13,6 +13,13 @@
 
 #define max(a,b) (a > b? a:b)
 
+typedef struct list{
+    char path[PATH_MAX];
+    int len;
+    struct list *next;
+}List;
+List *start;
+
 void MD5_generator(const char string[], char md5string[33], unsigned long len)
 {
     unsigned char result[MD5_DIGEST_LENGTH];
@@ -62,11 +69,83 @@ int load_config_file(struct server_config *config, char *path)
     fprintf(stderr, "%d\n", config->num_miners);
     return 0;
 }
-
+List *insert_list_node(List *head, char *path, int len)
+{
+    if (head == NULL) {
+        List *current = (List *)malloc(sizeof(List));
+        strcpy(current->path, path);
+        current->len = len;
+        current->next = head;
+        return current;
+    }
+    head->next = insert_list_node(head->next, path, len);
+    return head;
+}
+List *delete_list_node(List *delete)
+{
+    List *temp;
+    temp = delete->next;
+    free(delete);
+    return temp;
+}
+void dump(struct result *current) {
+    List *ptr, *before;
+    int fd;
+    if (start != NULL) {
+        fprintf(stderr, "XXXXXX\n");
+        ptr = start;
+        before = NULL;
+        while (ptr != NULL) {
+            fprintf(stderr, "%s\n", ptr->path);
+            fd = open(ptr->path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR);
+            if (fd > 0) {
+                fprintf(stderr, "writing %d\n", ptr->len);
+                int t = write(fd, current->string, ptr->len);
+                fprintf(stderr, "%d\n", t);
+                ptr = delete_list_node(ptr);
+                if (before == NULL) {
+                    start = ptr;
+                } else {
+                    before->next = ptr;
+                }
+            } else {
+                ptr = ptr->next;
+                if (before == NULL) {
+                    before = start;
+                } else {
+                    before = before->next;
+                }
+            }
+        }
+    }
+}
+void dump2(struct result *current) {
+    List *ptr, *before;
+    int fd;
+    if (start != NULL) {
+        fprintf(stderr, "XXXXXX\n");
+        ptr = start;
+        before = NULL;
+        while (ptr != NULL) {
+            fprintf(stderr, "%s\n", ptr->path);
+            while ((fd = open(ptr->path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR)) == -1) {}
+            fprintf(stderr, "writing %d\n", ptr->len);
+            int t = write(fd, current->string, ptr->len);
+            fprintf(stderr, "%d\n", t);
+            ptr = delete_list_node(ptr);
+            if (before == NULL) {
+                start = ptr;
+            } else {
+                before->next = ptr;
+            }
+        }
+    }
+}
 int assign_jobs(int num, struct fd_pair client_fds[], struct result *current)
 {
     /* TODO design your own (1) communication protocol (2) job assignment algorithm */
-    static unsigned char assign[9] = "\xff\x7f\x55\x40\x33\x2a\x24\x1f";
+    static unsigned char assign[16] = "\xff\x7f\x55\x40\x33\x2a\x24\x1f";
+    assign[15] = 0x0f;
     fprintf(stderr, "assign_jobs\n");
     unsigned char from = '\x00';
     char type = 'n';
@@ -91,7 +170,7 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
     /* TODO parse user commands here */
     static int fd, len;
     static char *ptr;
-    char cmd[8], type, path[100];
+    char cmd[8], type, path[PATH_MAX];
     scanf("%s", cmd);
 
     if (strcmp(cmd, "status") == 0) {
@@ -102,12 +181,16 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
             type = 's';
             write(client_fds[i].input_fd, &type, sizeof(char));
         }
-        printf("best %d-treasure %s in %d bytes\n", current->num, current->md5, current->len-1);
+        if (!current->num) {
+            printf("best 0-treasure in 0 bytes\n");
+        } else {
+            printf("best %d-treasure %s in %d bytes\n", current->num, current->md5, current->len-1);
+        }
     } else if (strcmp(cmd, "dump") == 0) {
         /* TODO write best n-treasure to specified file */
         scanf("%s", path);
-        fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-        len = current->len - 1;
+        start = insert_list_node(start, path, current->len-1);
+        fprintf(stderr, "path: %s\n", start->path);
     } else {
         assert(strcmp(cmd, "quit") == 0);
         /* TODO tell clients to cease their jobs and exit normally */
@@ -116,12 +199,10 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
             write(client_fds[i].input_fd, &type, sizeof(char));
             type = 'q';
             write(client_fds[i].input_fd, &type, sizeof(char));
+            close(client_fds[i].input_fd);
+            close(client_fds[i].output_fd);
         }
-        write(fd, current->string, len);
-        for (int ind = 0; ind < num; ind ++) {
-            close(client_fds[ind].input_fd);
-            close(client_fds[ind].output_fd);
-        }
+        dump2(current);
         fprintf(stderr, "I am going to rest\n");
         exit(0);
     }
@@ -134,6 +215,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "Usage: %s CONFIG_FILE\n", argv[0]);
         exit(1);
     }
+
+    start = NULL;
 
     /* load config file */
     struct server_config config;
@@ -179,7 +262,6 @@ int main(int argc, char **argv)
     memset(current.string, 0, sizeof(current.string));
     read(mine_fd, current.string, file_size);
     fprintf(stderr, "www%swww\n", current.string);
-    // if (strcmp(current.string, "B05902005") != 0) return 0;
     fprintf(stderr, "qqq\n");
     current.len = file_size + 1;
     MD5_generator(current.string, current.md5, file_size);
@@ -189,9 +271,6 @@ int main(int argc, char **argv)
             break;
         }
     }
-    // struct MD5Context context;
-    // MD5Init(&context);
-    // MD5Update(&context, current.string, current.len-1);
 
     /* assign jobs to clients */
     assign_jobs(config.num_miners, client_fds, &current);
@@ -205,8 +284,7 @@ int main(int argc, char **argv)
         select(maxfd, &working_readset, NULL, NULL, NULL);
 
         if (FD_ISSET(STDIN_FILENO, &working_readset)) {
-            /* TODO handle user input here */
-            fprintf(stderr, "command\n");
+            /* TODO handle user input here*/
             handle_command(config.num_miners, client_fds, &current);
         }
 
@@ -256,13 +334,7 @@ int main(int argc, char **argv)
                 }
             }
         }
+        dump(&current);
     }
-
-    /* TODO close file descriptors */
-    for (int ind = 0; ind < config.num_miners; ind ++) {
-        close(client_fds[ind].input_fd);
-        close(client_fds[ind].output_fd);
-    }
-
     return 0;
 }

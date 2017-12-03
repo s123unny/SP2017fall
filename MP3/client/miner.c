@@ -14,7 +14,7 @@ struct workinginfo
     char hash[33];
     int num, len;
 };
-
+int quit = 1;
 int process_select(fd_set working_readset, int input_fd, struct workinginfo *working)
 {   
     /*
@@ -37,10 +37,15 @@ int process_select(fd_set working_readset, int input_fd, struct workinginfo *wor
             } else { //quit
                 fprintf(stderr, "quit\n");
                 printf("BOSS is at rest.\n");
+                quit = 1;
                 return 2;
             }
         } else if (type == 'n') { //new work
             fprintf(stderr, "new work\n");
+            if (quit) {
+                printf("BOSS is mindful.\n");
+                quit = 0;
+            }
             read(input_fd, &working->num, sizeof(int));
             read(input_fd, &working->len, sizeof(int));
             read(input_fd, working->basic, sizeof(char) * working->len);
@@ -120,6 +125,7 @@ int process_working(fd_set readset, int input_fd, int output_fd, struct workingi
         }
         count ++;
         if (count == 32) {
+            // fprintf(stderr, "one round\n");
             memcpy(&working_readset, &readset, sizeof(readset));
             select(maxfd, &working_readset, NULL, NULL, &timeout);
             strcpy(working->hash, md5string);
