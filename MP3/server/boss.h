@@ -33,7 +33,8 @@ n: //new work
 
 	client->server protocol
 (int) //len
-(char * len) //found string
+(char * len) //found string (need to be added part)
+(char * 33) //hash
 (int) //len
 (char * len) //name
 */
