@@ -44,11 +44,9 @@ int load_config_file(struct server_config *config, char *path)
 
     memset(data, 0, sizeof(data));
     read(fd, data, sizeof(data));
-    fprintf(stderr, "%s\n", data);
     sscanf(data, "%s%s", tmp, tmp2);
     config->mine_file = malloc(sizeof(char)*strlen(tmp2) + 1);
     strcpy(config->mine_file, tmp2);
-    fprintf(stderr, "%s\n", config->mine_file);
     config->num_miners = 0;
     config->pipes = pipe;
 
@@ -56,12 +54,11 @@ int load_config_file(struct server_config *config, char *path)
     str_ptr += 1;
 
     while (*str_ptr != '\0') {
-        sscanf(str_ptr, "%s%s%s", tmp, tmp2, tmp3);
+        if (sscanf(str_ptr, "%s%s%s", tmp, tmp2, tmp3) != 3) break;
         pipe[config->num_miners].input_pipe = malloc(sizeof(char)*strlen(tmp2) + 1);
         pipe[config->num_miners].output_pipe = malloc(sizeof(char)*strlen(tmp3) + 1);
         strcpy(pipe[config->num_miners].input_pipe, tmp2);
         strcpy(pipe[config->num_miners].output_pipe, tmp3);
-        // fprintf(stderr, "%s %s\n", pipe[config->num_miners].input_pipe, pipe[config->num_miners].output_pipe);
         config->num_miners ++;
         str_ptr = strchr(str_ptr, '\n');
         str_ptr += 1;
@@ -92,7 +89,6 @@ void dump(struct result *current) {
     List *ptr, *before;
     int fd;
     if (start != NULL) {
-        fprintf(stderr, "XXXXXX\n");
         ptr = start;
         before = NULL;
         while (ptr != NULL) {
@@ -123,7 +119,6 @@ void dump2(struct result *current) {
     List *ptr, *before;
     int fd;
     if (start != NULL) {
-        fprintf(stderr, "XXXXXX\n");
         ptr = start;
         before = NULL;
         while (ptr != NULL) {
@@ -163,7 +158,6 @@ int assign_jobs(int num, struct fd_pair client_fds[], struct result *current)
     }
     fprintf(stderr, "%c %d %d %s#\n", type, current->num, current->len, current->string);
     current->num --;
-    fprintf(stderr, "finish\n");
 }
 int handle_command(int num, struct fd_pair client_fds[], struct result *current)
 {
@@ -232,8 +226,8 @@ int main(int argc, char **argv)
 
     FD_ZERO(&readset);
     FD_SET(STDIN_FILENO, &readset);
-    // TODO add input pipes to readset, setup maxfd
 
+    // TODO add input pipes to readset, setup maxfd
     for (int ind = 0; ind < config.num_miners; ind ++) {
         fprintf(stderr, "%d\n", ind);
         struct fd_pair *fd_ptr = &client_fds[ind];
@@ -245,14 +239,12 @@ int main(int argc, char **argv)
 
         fprintf(stderr, "open: %s\n", pipe_ptr->output_pipe);
         fd_ptr->output_fd = open(pipe_ptr->output_pipe, O_RDONLY);
-        // fprintf(stderr, "%d\n", fd_ptr->output_fd);
-        assert (fd_ptr->output_fd >= 0);
+        // assert (fd_ptr->output_fd >= 0);
 
         FD_SET(fd_ptr->output_fd, &readset);
         maxfd = max(fd_ptr->output_fd, maxfd);
     }
     maxfd ++;
-    // fprintf(stderr, "max: %d\n", maxfd);
     struct result current;
     fprintf(stderr, "open: %s\n", config.mine_file);
     int mine_fd = open(config.mine_file, O_RDONLY);
@@ -262,7 +254,7 @@ int main(int argc, char **argv)
     memset(current.string, 0, sizeof(current.string));
     read(mine_fd, current.string, file_size);
     fprintf(stderr, "www%swww\n", current.string);
-    fprintf(stderr, "qqq\n");
+    // fprintf(stderr, "qqq\n");
     current.len = file_size + 1;
     MD5_generator(current.string, current.md5, file_size);
 
@@ -291,22 +283,19 @@ int main(int argc, char **argv)
         /* TODO check if any client send me some message
            you may re-assign new jobs to clients */
         for (int i = 0; i < config.num_miners; i++) {
-            fprintf(stderr, "wwwww\n");
+            // fprintf(stderr, "wwwww\n");
             if (FD_ISSET(client_fds[i].output_fd, &working_readset)) {
                 old = 0;
                 fprintf(stderr, "xxxx\n");
                 read(client_fds[i].output_fd, &len, sizeof(int));
-                // if (len == 0) fprintf(stderr, "QQQQQ\n");
                 memset(temp, 0, sizeof(temp));
-                read(client_fds[i].output_fd, temp, len);
+                read(client_fds[i].output_fd, temp, len); //char to add
                 fprintf(stderr, "%x %d\n", temp[1], len);
-                // strncat(current.string, temp, len-1);
                 memset(temp2, 0, 33);
-                read(client_fds[i].output_fd, temp2, 33);
+                read(client_fds[i].output_fd, temp2, 33); //hash
                 read(client_fds[i].output_fd, &len2, sizeof(int));
                 memset(name, 0, sizeof(name));
-                read(client_fds[i].output_fd, name, len2);
-                // MD5_generator(current.string, current.md5);
+                read(client_fds[i].output_fd, name, len2); //name
                 for (int j = 0; j < current.num + 1; j++) {
                     if (temp2[j] != '0') {
                         old = 1;
@@ -318,7 +307,7 @@ int main(int argc, char **argv)
                     current.len += len - 1;
                     current.num ++;
                     memcpy(current.md5, temp2, 33);
-                    char data[200], type = 'p';
+                    char data[250], type = 'p';
                     sprintf(data, "%s wins a %d-treasure! %s", name, current.num, current.md5);
                     len = strlen(data) + 1;
                     for (int j = 0; j < config.num_miners; j++) {

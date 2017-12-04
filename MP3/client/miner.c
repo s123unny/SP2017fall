@@ -17,18 +17,13 @@ struct workinginfo
 int quit = 1;
 int process_select(fd_set working_readset, int input_fd, struct workinginfo *working)
 {   
-    /*
-    memcpy(&working_readset, &readset, sizeof(readset));
-    select(maxfd, &working_readset, NULL, NULL, &timeout);
-    process_select(working_readset, input_fd, &working);
-    */
     int len, len2;
     char type;
 
     if (FD_ISSET(input_fd, &working_readset)) {
         // new work or command
         read(input_fd, &type, sizeof(char));
-        if (type == 'c') { //print status
+        if (type == 'c') { //command
             fprintf(stderr, "command\n");
             read(input_fd, &type, sizeof(char));
             if (type == 's') { //status
@@ -80,11 +75,6 @@ int process_working(fd_set readset, int input_fd, int output_fd, struct workingi
     timeout.tv_usec = 0;
 
     char md5string[33];
-    // unsigned char result[16], temp[2], pop_item[20];
-    // int len, no, flag;
-    // memset(temp, 0, sizeof(temp));
-    // memset(pop_item, 0, sizeof(pop_item));
-
     int now, len = 2, no, flag, count = 0;
     unsigned char add[30], result[16];
     memset(add, 0, sizeof(add));
