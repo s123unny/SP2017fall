@@ -17,7 +17,7 @@ struct result
 {
     int num, len; //include '\0'
     char md5[33];
-    unsigned char string[100];
+    unsigned char string[100]; //add not include init data
     struct MD5Context context;
 };
 unsigned long get_size_by_fd(int fd) {
@@ -59,32 +59,25 @@ int load_config_file(struct server_config *config, char *path)
 int assign_jobs(int num, struct fd_pair client_fds[], struct result *current)
 {
     /* TODO design your own (1) communication protocol (2) job assignment algorithm */
-    static unsigned char assign[16] = "\xff\x7f\x55\x40\x33\x2a\x24\x1f";
-    assign[15] = 0x0f;
+    static unsigned char assign[9] = "\x00\xff\x7f\x55\x40\x33\x2a\x24\x1f";
     fprintf(stderr, "assign_jobs\n");
     unsigned char from = '\x00';
     char type = 'n';
     current->num ++;
-    // unsigned char result[MD5_DIGEST_LENGTH], hash[33];
-    // MD5Final(result, &(current->context));
-    // for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
-    //     sprintf(&hash[i*2], "%02x", (unsigned int)result[i]);
-    // }
     for (int i = 0; i < num; i++) {
         write(client_fds[i].input_fd, &type, sizeof(char));
         write(client_fds[i].input_fd, &current->num, sizeof(int));
         write(client_fds[i].input_fd, &current->context, sizeof(struct MD5Context));
         write(client_fds[i].input_fd, &from, sizeof(char));
-        from += assign[num-1];
+        from += assign[num];
         if (i == num-1) from = 0xff;
         write(client_fds[i].input_fd, &from, sizeof(char));
         from ++;
     }
-    // fprintf(stderr, "2 md5: %s\n", hash);
     fprintf(stderr, "%c %d %d#\n", type, current->num, current->len);
     current->num --;
 }
-int handle_command(int num, struct fd_pair client_fds[], struct result *current)
+int handle_command(int num, struct fd_pair client_fds[], struct result *current, char *mine_file, unsigned long file_size)
 {
     /* TODO parse user commands here */
     static int fd, len;
@@ -113,7 +106,32 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
             int fd;
             while ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR)) == -1) {}
             fprintf(stderr, "child writing\n");
-            int t = write(fd, current->string, current->len - 1);
+
+            int mine_fd = open(mine_file, O_RDONLY), t;
+            unsigned char *data = (char*)malloc(file_size + 1), *ptr;
+            read(mine_fd, data, file_size);
+
+            struct stat statbuf;
+            lstat(path, &statbuf);
+            if (S_ISFIFO(statbuf.st_mode)) {
+                ptr = data;
+                while (file_size) {
+                    t = write(fd, ptr, file_size);
+                    if (t > 0) {
+                        fprintf(stderr, "child write %d\n", t);
+                        file_size -= t;
+                        ptr += t;
+                    }
+                }
+            } else {
+                t = write(fd, data, file_size);
+                fprintf(stderr, "child write %d\n", t);
+            }
+
+            close(mine_fd);
+            free(data);
+
+            t = write(fd, current->string, current->len);
             fprintf(stderr, "child write %d\n", t);
             close(fd);
             exit(0);
@@ -133,7 +151,6 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
         exit(0);
     }
 }
-
 int main(int argc, char **argv)
 {
     /* sanity check on arguments */
@@ -176,6 +193,8 @@ int main(int argc, char **argv)
     }
     maxfd ++;
     struct result current;
+    memset(current.string, 0, sizeof(current.string));
+    current.len = 0;
     struct MD5Context copy;
 
     unsigned char result[MD5_DIGEST_LENGTH];
@@ -185,11 +204,11 @@ int main(int argc, char **argv)
     int mine_fd = open(config.mine_file, O_RDONLY);
     unsigned long file_size = get_size_by_fd(mine_fd);
     fprintf(stderr, "%u\n", file_size);
-    memset(current.string, 0, sizeof(current.string));
-    read(mine_fd, current.string, file_size);
-    current.len = file_size + 1;
-    fprintf(stderr, "%s\n", current.string);
-    MD5Update(&current.context, current.string, file_size);
+    unsigned char *data = (char*)malloc(file_size + 1);
+    read(mine_fd, data, file_size);
+    close(mine_fd);
+    MD5Update(&current.context, data, file_size);
+    free(data);
     copy = current.context;
     MD5Final(result, &current.context);
     for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
@@ -217,7 +236,7 @@ int main(int argc, char **argv)
 
         if (FD_ISSET(STDIN_FILENO, &working_readset)) {
             /* TODO handle user input here*/
-            handle_command(config.num_miners, client_fds, &current);
+            handle_command(config.num_miners, client_fds, &current, config.mine_file, file_size);
         }
 
         /* TODO check if any client send me some message
@@ -244,7 +263,7 @@ int main(int argc, char **argv)
                         fprintf(stderr, "%x ", temp[j]);
                     }
                     fprintf(stderr, "\n");
-                    memcpy(current.string + current.len-1, temp, len);
+                    memcpy(current.string + current.len, temp, len);
                     current.len += len - 1;
                     current.num ++;
 
@@ -265,7 +284,6 @@ int main(int argc, char **argv)
                             write(client_fds[j].input_fd, data, len);
                         }
                     }
-
                     assign_jobs(config.num_miners, client_fds, &current);
                     printf("A %d-treasure discovered! %s\n", current.num, current.md5);
                 }
