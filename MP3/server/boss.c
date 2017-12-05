@@ -13,13 +13,6 @@
 
 #define max(a,b) (a > b? a:b)
 
-typedef struct list{
-    char path[PATH_MAX];
-    int len;
-    struct list *next;
-}List;
-List *start;
-
 struct result
 {
     int num, len; //include '\0'
@@ -62,76 +55,6 @@ int load_config_file(struct server_config *config, char *path)
     }
     fprintf(stderr, "%d\n", config->num_miners);
     return 0;
-}
-List *insert_list_node(List *head, char *path, int len)
-{
-    if (head == NULL) {
-        List *current = (List *)malloc(sizeof(List));
-        strcpy(current->path, path);
-        current->len = len;
-        current->next = head;
-        return current;
-    }
-    head->next = insert_list_node(head->next, path, len);
-    return head;
-}
-List *delete_list_node(List *delete)
-{
-    List *temp;
-    temp = delete->next;
-    free(delete);
-    return temp;
-}
-void dump(struct result *current) {
-    List *ptr, *before;
-    int fd;
-    if (start != NULL) {
-        ptr = start;
-        before = NULL;
-        while (ptr != NULL) {
-            fprintf(stderr, "%s\n", ptr->path);
-            fd = open(ptr->path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR);
-            if (fd > 0) {
-                fprintf(stderr, "writing %d\n", ptr->len);
-                int t = write(fd, current->string, ptr->len);
-                fprintf(stderr, "%d\n", t);
-                ptr = delete_list_node(ptr);
-                if (before == NULL) {
-                    start = ptr;
-                } else {
-                    before->next = ptr;
-                }
-            } else {
-                ptr = ptr->next;
-                if (before == NULL) {
-                    before = start;
-                } else {
-                    before = before->next;
-                }
-            }
-        }
-    }
-}
-void dump2(struct result *current) {
-    List *ptr, *before;
-    int fd;
-    if (start != NULL) {
-        ptr = start;
-        before = NULL;
-        while (ptr != NULL) {
-            fprintf(stderr, "%s\n", ptr->path);
-            while ((fd = open(ptr->path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR)) == -1) {}
-            fprintf(stderr, "writing %d\n", ptr->len);
-            int t = write(fd, current->string, ptr->len);
-            fprintf(stderr, "%d\n", t);
-            ptr = delete_list_node(ptr);
-            if (before == NULL) {
-                start = ptr;
-            } else {
-                before->next = ptr;
-            }
-        }
-    }
 }
 int assign_jobs(int num, struct fd_pair client_fds[], struct result *current)
 {
@@ -185,8 +108,16 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
     } else if (strcmp(cmd, "dump") == 0) {
         /* TODO write best n-treasure to specified file */
         scanf("%s", path);
-        start = insert_list_node(start, path, current->len-1);
-        fprintf(stderr, "path: %s\n", start->path);
+        pid_t pid = fork();
+        if (pid == 0) { //child
+            int fd;
+            while ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR)) == -1) {}
+            fprintf(stderr, "child writing\n");
+            int t = write(fd, current->string, current->len - 1);
+            fprintf(stderr, "child write %d\n", t);
+            close(fd);
+            exit(0);
+        }
     } else {
         assert(strcmp(cmd, "quit") == 0);
         /* TODO tell clients to cease their jobs and exit normally */
@@ -198,7 +129,6 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current)
             close(client_fds[i].input_fd);
             close(client_fds[i].output_fd);
         }
-        dump2(current);
         fprintf(stderr, "I am going to rest\n");
         exit(0);
     }
@@ -211,8 +141,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "Usage: %s CONFIG_FILE\n", argv[0]);
         exit(1);
     }
-
-    start = NULL;
 
     /* load config file */
     struct server_config config;
@@ -343,7 +271,6 @@ int main(int argc, char **argv)
                 }
             }
         }
-        dump(&current);
     }
     return 0;
 }
