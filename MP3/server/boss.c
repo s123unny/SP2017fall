@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <openssl/md5.h>
+#include <bsd/md5.h>
 
 #include "boss.h"
 
@@ -20,16 +20,13 @@ typedef struct list{
 }List;
 List *start;
 
-void MD5_generator(const char string[], char md5string[33], unsigned long len)
+struct result
 {
-    unsigned char result[MD5_DIGEST_LENGTH];
-    const unsigned char* str_buffer = string;
-    
-    MD5(str_buffer, len, result);
-    for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
-        sprintf(&md5string[i*2], "%02x", (unsigned int)result[i]);
-    }
-}
+    int num, len; //include '\0'
+    char md5[33];
+    unsigned char string[100];
+    struct MD5Context context;
+};
 unsigned long get_size_by_fd(int fd) {
     struct stat statbuf;
     if(fstat(fd, &statbuf) < 0) exit(-1);
@@ -145,18 +142,23 @@ int assign_jobs(int num, struct fd_pair client_fds[], struct result *current)
     unsigned char from = '\x00';
     char type = 'n';
     current->num ++;
+    // unsigned char result[MD5_DIGEST_LENGTH], hash[33];
+    // MD5Final(result, &(current->context));
+    // for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
+    //     sprintf(&hash[i*2], "%02x", (unsigned int)result[i]);
+    // }
     for (int i = 0; i < num; i++) {
         write(client_fds[i].input_fd, &type, sizeof(char));
         write(client_fds[i].input_fd, &current->num, sizeof(int));
-        write(client_fds[i].input_fd, &current->len, sizeof(int));
-        write(client_fds[i].input_fd, current->string, current->len);
+        write(client_fds[i].input_fd, &current->context, sizeof(struct MD5Context));
         write(client_fds[i].input_fd, &from, sizeof(char));
         from += assign[num-1];
         if (i == num-1) from = 0xff;
         write(client_fds[i].input_fd, &from, sizeof(char));
         from ++;
     }
-    fprintf(stderr, "%c %d %d %s#\n", type, current->num, current->len, current->string);
+    // fprintf(stderr, "2 md5: %s\n", hash);
+    fprintf(stderr, "%c %d %d#\n", type, current->num, current->len);
     current->num --;
 }
 int handle_command(int num, struct fd_pair client_fds[], struct result *current)
@@ -246,17 +248,27 @@ int main(int argc, char **argv)
     }
     maxfd ++;
     struct result current;
+    struct MD5Context copy;
+
+    unsigned char result[MD5_DIGEST_LENGTH];
+    MD5Init(&current.context);
+
     fprintf(stderr, "open: %s\n", config.mine_file);
     int mine_fd = open(config.mine_file, O_RDONLY);
-    fprintf(stderr, "aaa %d\n", mine_fd);
     unsigned long file_size = get_size_by_fd(mine_fd);
     fprintf(stderr, "%u\n", file_size);
     memset(current.string, 0, sizeof(current.string));
     read(mine_fd, current.string, file_size);
-    fprintf(stderr, "www%swww\n", current.string);
-    // fprintf(stderr, "qqq\n");
     current.len = file_size + 1;
-    MD5_generator(current.string, current.md5, file_size);
+    fprintf(stderr, "%s\n", current.string);
+    MD5Update(&current.context, current.string, file_size);
+    copy = current.context;
+    MD5Final(result, &current.context);
+    for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
+        sprintf(&current.md5[i*2], "%02x", (unsigned int)result[i]);
+    }
+    current.context = copy;
+    fprintf(stderr, "init md5:%s\n", current.md5);
 
     for (current.num = 0; current.num < 33; current.num++) {
         if (current.md5[current.num] != '0') {
@@ -267,9 +279,9 @@ int main(int argc, char **argv)
     /* assign jobs to clients */
     assign_jobs(config.num_miners, client_fds, &current);
 
-    int len, len2, old;
+    int len, len2, old, tempnum;
     char name[200];
-    unsigned char temp[30], result[16], temp2[33];
+    unsigned char temp[30], temp2[33];
     while (1) {
         fprintf(stderr, "waiting\n");
         memcpy(&working_readset, &readset, sizeof(readset)); // why we need memcpy() here?
@@ -287,26 +299,34 @@ int main(int argc, char **argv)
             if (FD_ISSET(client_fds[i].output_fd, &working_readset)) {
                 old = 0;
                 fprintf(stderr, "xxxx\n");
+                read(client_fds[i].output_fd, &tempnum, sizeof(int));
                 read(client_fds[i].output_fd, &len, sizeof(int));
                 memset(temp, 0, sizeof(temp));
                 read(client_fds[i].output_fd, temp, len); //char to add
                 fprintf(stderr, "%x %d\n", temp[1], len);
-                memset(temp2, 0, 33);
-                read(client_fds[i].output_fd, temp2, 33); //hash
                 read(client_fds[i].output_fd, &len2, sizeof(int));
                 memset(name, 0, sizeof(name));
                 read(client_fds[i].output_fd, name, len2); //name
-                for (int j = 0; j < current.num + 1; j++) {
-                    if (temp2[j] != '0') {
-                        old = 1;
-                        break;
-                    }
+                if (tempnum != current.num + 1) {
+                    old = 1;
                 }
                 if (!old) {
+                    fprintf(stderr, "wwww");
+                    for (int j = 0; j < len; j++) {
+                        fprintf(stderr, "%x ", temp[j]);
+                    }
+                    fprintf(stderr, "\n");
                     memcpy(current.string + current.len-1, temp, len);
                     current.len += len - 1;
                     current.num ++;
-                    memcpy(current.md5, temp2, 33);
+
+                    MD5Update(&current.context, temp, len-1);
+                    copy = current.context;
+                    MD5Final(result, &current.context);
+                    for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
+                        sprintf(&current.md5[i*2], "%02x", (unsigned int)result[i]);
+                    }
+                    current.context = copy;
                     char data[250], type = 'p';
                     sprintf(data, "%s wins a %d-treasure! %s", name, current.num, current.md5);
                     len = strlen(data) + 1;

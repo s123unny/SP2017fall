@@ -28,20 +28,13 @@ p: //print
 	(char * len) //data to print
 n: //new work
 	(int) //now need to find num
-	(int*1) //len2
-	(char * len1, char*1, char*1) //new range
+	(struct MD5Context)
+	(char*1, char*1) //range
 
 	client->server protocol
+(int) //num
 (int) //len
-(char * len) //found string (need to be added part)
-(char * 33) //hash
+(char * len) //found string(need to be added)
 (int) //len
 (char * len) //name
 */
-
-struct result
-{
-	int num, len; //include '\0'
-	char md5[33];
-	unsigned char string[100];
-};

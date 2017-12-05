@@ -4,7 +4,7 @@
 CC=gcc
 
 # place options like -O2, -g here
-CFLAGS=-O2 -lcrypto
+CFLAGS=-O2 -lbsd
 
 all: boss
 

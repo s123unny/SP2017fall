@@ -10,11 +10,15 @@
 
 struct workinginfo
 {
-    unsigned char from, to, basic[100];
+    unsigned char from, to;
     char hash[33];
+    struct MD5Context context;
     int num, len;
 };
 int quit = 1;
+
+struct MD5Context debug;
+
 int process_select(fd_set working_readset, int input_fd, struct workinginfo *working)
 {   
     int len, len2;
@@ -42,15 +46,10 @@ int process_select(fd_set working_readset, int input_fd, struct workinginfo *wor
                 quit = 0;
             }
             read(input_fd, &working->num, sizeof(int));
-            read(input_fd, &working->len, sizeof(int));
-            read(input_fd, working->basic, sizeof(char) * working->len);
+            read(input_fd, &working->context, sizeof(struct MD5Context));
             read(input_fd, &working->from, sizeof(char));
             read(input_fd, &working->to, sizeof(char));
-            fprintf(stderr, "%d %s %x %x\n", working->num, working->basic, working->from, working->to);
-            for (int i = 0; i < working->len; i++) {
-                fprintf(stderr, "%x ", working->basic[i]);
-            }
-            fprintf(stderr, "\n");
+            fprintf(stderr, "%d %x %x\n", working->num, working->from, working->to);
             return 1;
         } else { //print
             fprintf(stderr, "print data %c#\n", type);
@@ -79,22 +78,27 @@ int process_working(fd_set readset, int input_fd, int output_fd, struct workingi
     unsigned char add[30], result[16];
     memset(add, 0, sizeof(add));
     add[0] = working->from;
-    struct MD5Context context, new;
-    MD5Init(&context);
-    MD5Update(&context, working->basic, working->len-1);
+    struct MD5Context new;
+
+    // MD5Final(result, &working->context);
+    // for(int j = 0; j < MD5_DIGEST_LENGTH; j++) {
+    //     sprintf(&working->hash[j*2], "%02x", (unsigned int)result[j]);
+    // }
+    // fprintf(stderr, "init hash:%s\n", working->hash);
+
     while (1) {
-        new = context;
+        new = working->context;
         MD5Update(&new, add, len-1);
         MD5Final(result, &new);
         for(int j = 0; j < MD5_DIGEST_LENGTH; j++) {
-            sprintf(&md5string[j*2], "%02x", (unsigned int)result[j]);
+            sprintf(&working->hash[j*2], "%02x", (unsigned int)result[j]);
         }
         no = 0;
-        if (md5string[working->num] == '0') {
+        if (working->hash[working->num] == '0') {
             no = 1;
         } else {
             for (int j = 0; j < working->num; j++) {
-                if (md5string[j] != '0') {
+                if (working->hash[j] != '0') {
                     no = 1;
                     break;
                 }
@@ -102,29 +106,29 @@ int process_working(fd_set readset, int input_fd, int output_fd, struct workingi
         }
         if (!no) {
             //write print
+            write(output_fd, &working->num, sizeof(int));
             write(output_fd, &len, sizeof(int));
             write(output_fd, add, len);
             fprintf(stderr, "%x %x %d\n", add[0], add[1], len);
-            write(output_fd, md5string, 33);
             len = strlen(name) + 1;
             write(output_fd, &len, sizeof(int));
             write(output_fd, name, len);
-            fprintf(stderr, "#I win a %d-treasure! %s\n", working->num, md5string);
-            printf("I win a %d-treasure! %s\n", working->num, md5string);
+            fprintf(stderr, "#I win a %d-treasure! %s\n", working->num, working->hash);
+            printf("I win a %d-treasure! %s\n", working->num, working->hash);
             return 1;
         }
         count ++;
         if (count == 32) {
             // fprintf(stderr, "one round\n");
             memcpy(&working_readset, &readset, sizeof(readset));
-            select(maxfd, &working_readset, NULL, NULL, &timeout);
-            strcpy(working->hash, md5string);
-            flag = process_select(working_readset, input_fd, working);
-            if (flag == 2) {
-                fprintf(stderr, "return\n");
-                return 2;
-            } else if (flag == 1) {
-                return 0;
+            if (select(maxfd, &working_readset, NULL, NULL, &timeout) > 0) {
+                flag = process_select(working_readset, input_fd, working);
+                if (flag == 2) {
+                    fprintf(stderr, "return\n");
+                    return 2;
+                } else if (flag == 1) {
+                    return 0;
+                }
             }
             count = 0;
         }
@@ -196,6 +200,15 @@ int main(int argc, char **argv)
     fprintf(stderr, "setting\n");
 
     struct workinginfo working;
+
+    unsigned char hash[33], result[MD5_DIGEST_LENGTH];
+    MD5Init(&debug);
+    MD5Update(&debug, "B05902005", 9);
+    MD5Final(result, &debug);
+    for(int j = 0; j < MD5_DIGEST_LENGTH; j++) {
+        sprintf(&hash[j*2], "%02x", (unsigned int)result[j]);
+    }
+    fprintf(stderr, "B05902005 hash: %s\n", hash);
 
     while (1) {
         fprintf(stderr, "waiting\n");
