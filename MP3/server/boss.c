@@ -8,10 +8,12 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <bsd/md5.h>
+#include <sys/wait.h>
 
 #include "boss.h"
 
 #define max(a,b) (a > b? a:b)
+#define MAX 1000000
 
 struct result
 {
@@ -29,7 +31,7 @@ int load_config_file(struct server_config *config, char *path)
 {
     /* TODO finish your own config file parser */
     int fd = open(path, O_RDONLY);
-    char data[1024], *str_ptr, tmp[100], tmp2[100], tmp3[100];
+    char data[10240], *str_ptr, tmp[100], tmp2[PATH_MAX], tmp3[PATH_MAX];
     static struct pipe_pair pipe[8];
 
     memset(data, 0, sizeof(data));
@@ -80,62 +82,70 @@ int assign_jobs(int num, struct fd_pair client_fds[], struct result *current)
 int handle_command(int num, struct fd_pair client_fds[], struct result *current, char *mine_file, unsigned long file_size)
 {
     /* TODO parse user commands here */
-    static int fd, len;
-    static char *ptr;
+    static pid_t child_pid[200];
+    static int child_count;
     char cmd[8], type, path[PATH_MAX];
     scanf("%s", cmd);
 
     if (strcmp(cmd, "status") == 0) {
         /* TODO show status */
-        for (int i = 0; i < num; i++) {
-            type = 'c';
-            write(client_fds[i].input_fd, &type, sizeof(char));
-            type = 's';
-            write(client_fds[i].input_fd, &type, sizeof(char));
-        }
         if (!current->num) {
             printf("best 0-treasure in 0 bytes\n");
         } else {
             printf("best %d-treasure %s in %d bytes\n", current->num, current->md5, current->len-1);
+            for (int i = 0; i < num; i++) {
+	            type = 'c';
+	            write(client_fds[i].input_fd, &type, sizeof(char));
+	            type = 's';
+	            write(client_fds[i].input_fd, &type, sizeof(char));
+	        }
         }
     } else if (strcmp(cmd, "dump") == 0) {
         /* TODO write best n-treasure to specified file */
         scanf("%s", path);
-        pid_t pid = fork();
-        if (pid == 0) { //child
-            int fd;
-            while ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR)) == -1) {}
-            fprintf(stderr, "child writing\n");
+        if (current->num) {
+	        pid_t pid = fork();
+	        if (pid == 0) { //child
+	            int fd;
+	            while ((fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR)) == -1) {}
+	            fprintf(stderr, "child writing\n");
 
-            int mine_fd = open(mine_file, O_RDONLY), t;
-            unsigned char *data = (char*)malloc(file_size + 1), *ptr;
-            read(mine_fd, data, file_size);
+	            int mine_fd = open(mine_file, O_RDONLY), t;
+	            unsigned char *data = (char*)malloc(file_size + 1), *ptr;
+	            read(mine_fd, data, file_size);
 
-            struct stat statbuf;
-            lstat(path, &statbuf);
-            if (S_ISFIFO(statbuf.st_mode)) {
-                ptr = data;
-                while (file_size) {
-                    t = write(fd, ptr, file_size);
-                    if (t > 0) {
-                        fprintf(stderr, "child write %d\n", t);
-                        file_size -= t;
-                        ptr += t;
-                    }
-                }
-            } else {
-                t = write(fd, data, file_size);
-                fprintf(stderr, "child write %d\n", t);
-            }
+	            struct stat statbuf;
+	            lstat(path, &statbuf);
+	            if (S_ISFIFO(statbuf.st_mode)) {
+	                ptr = data;
+	                while (file_size) {
+	                    t = write(fd, ptr, file_size);
+	                    if (t > 0) {
+	                        fprintf(stderr, "child write %d\n", t);
+	                        file_size -= t;
+	                        ptr += t;
+	                    }
+	                }
+	            } else {
+	                t = write(fd, data, file_size);
+	                fprintf(stderr, "child write %d\n", t);
+	            }
 
-            close(mine_fd);
-            free(data);
+	            close(mine_fd);
+	            free(data);
 
-            t = write(fd, current->string, current->len);
-            fprintf(stderr, "child write %d\n", t);
-            close(fd);
-            exit(0);
-        }
+	            t = write(fd, current->string, current->len);
+	            fprintf(stderr, "child write %d\n", t);
+	            close(fd);
+	            exit(0);
+	        } else {
+	        	child_pid[child_count] = pid;
+	        	child_count ++;
+	        }
+	    } else {
+	    	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, S_IRUSR | S_IWUSR);
+	    	close(fd);
+	    }
     } else {
         assert(strcmp(cmd, "quit") == 0);
         /* TODO tell clients to cease their jobs and exit normally */
@@ -148,6 +158,10 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current,
             close(client_fds[i].output_fd);
         }
         fprintf(stderr, "I am going to rest\n");
+        int wstatus;
+        for (int i = 0; i < child_count; i++) {
+        	waitpid(child_pid[i], &wstatus,0);
+        }
         exit(0);
     }
 }
@@ -167,12 +181,54 @@ int main(int argc, char **argv)
     struct fd_pair client_fds[config.num_miners];
 
     /* initialize data for select() */
-    int maxfd;
+    int maxfd = 1;
     fd_set readset;
     fd_set working_readset;
 
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+
     FD_ZERO(&readset);
     FD_SET(STDIN_FILENO, &readset);
+
+    struct result current;
+    memset(current.string, 0, sizeof(current.string));
+    current.len = 0;
+    struct MD5Context copy;
+
+    unsigned char result[MD5_DIGEST_LENGTH];
+    MD5Init(&current.context);
+
+    fprintf(stderr, "open: %s\n", config.mine_file);
+    int mine_fd = open(config.mine_file, O_RDONLY);
+    unsigned long file_size = get_size_by_fd(mine_fd), size_count = 0, tmp_count;
+    fprintf(stderr, "%u\n", file_size);
+    unsigned char *data = (char*)malloc(MAX+1);
+    while (size_count < file_size) {
+    	tmp_count = read(mine_fd, data, MAX);
+    	MD5Update(&current.context, data, tmp_count);
+    	size_count += tmp_count;
+    	memcpy(&working_readset, &readset, sizeof(readset));
+    	if (select(maxfd, &working_readset, NULL, NULL, &timeout) > 0) {
+    		handle_command(config.num_miners, client_fds, &current, config.mine_file, file_size);	
+    	}
+    }
+    close(mine_fd);
+    free(data);
+    copy = current.context;
+    MD5Final(result, &current.context);
+    for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
+        sprintf(&current.md5[i*2], "%02x", (unsigned int)result[i]);
+    }
+    current.context = copy;
+    fprintf(stderr, "init md5:%s\n", current.md5);
+    current.num = 0;
+    for (; current.num < 33; current.num++) {
+        if (current.md5[current.num] != '0') {
+            break;
+        }
+    }
 
     // TODO add input pipes to readset, setup maxfd
     for (int ind = 0; ind < config.num_miners; ind ++) {
@@ -192,42 +248,12 @@ int main(int argc, char **argv)
         maxfd = max(fd_ptr->output_fd, maxfd);
     }
     maxfd ++;
-    struct result current;
-    memset(current.string, 0, sizeof(current.string));
-    current.len = 0;
-    struct MD5Context copy;
-
-    unsigned char result[MD5_DIGEST_LENGTH];
-    MD5Init(&current.context);
-
-    fprintf(stderr, "open: %s\n", config.mine_file);
-    int mine_fd = open(config.mine_file, O_RDONLY);
-    unsigned long file_size = get_size_by_fd(mine_fd);
-    fprintf(stderr, "%u\n", file_size);
-    unsigned char *data = (char*)malloc(file_size + 1);
-    read(mine_fd, data, file_size);
-    close(mine_fd);
-    MD5Update(&current.context, data, file_size);
-    free(data);
-    copy = current.context;
-    MD5Final(result, &current.context);
-    for(int i=0; i <MD5_DIGEST_LENGTH; i++) {
-        sprintf(&current.md5[i*2], "%02x", (unsigned int)result[i]);
-    }
-    current.context = copy;
-    fprintf(stderr, "init md5:%s\n", current.md5);
-
-    for (current.num = 0; current.num < 33; current.num++) {
-        if (current.md5[current.num] != '0') {
-            break;
-        }
-    }
 
     /* assign jobs to clients */
     assign_jobs(config.num_miners, client_fds, &current);
 
     int len, len2, old, tempnum;
-    char name[200];
+    char name[PATH_MAX];
     unsigned char temp[30], temp2[33];
     while (1) {
         fprintf(stderr, "waiting\n");
