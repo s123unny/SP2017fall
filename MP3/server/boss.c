@@ -92,7 +92,7 @@ int handle_command(int num, struct fd_pair client_fds[], struct result *current,
         if (!current->num) {
             printf("best 0-treasure in 0 bytes\n");
         } else {
-            printf("best %d-treasure %s in %d bytes\n", current->num, current->md5, current->len-1);
+            printf("best %d-treasure %s in %d bytes\n", current->num, current->md5, current->len-1 + file_size);
             for (int i = 0; i < num; i++) {
 	            type = 'c';
 	            write(client_fds[i].input_fd, &type, sizeof(char));
@@ -224,11 +224,11 @@ int main(int argc, char **argv)
     current.context = copy;
     fprintf(stderr, "init md5:%s\n", current.md5);
     current.num = 0;
-    for (; current.num < 33; current.num++) {
-        if (current.md5[current.num] != '0') {
-            break;
-        }
-    }
+    // for (; current.num < 33; current.num++) {
+    //     if (current.md5[current.num] != '0') {
+    //         break;
+    //     }
+    // }
 
     // TODO add input pipes to readset, setup maxfd
     for (int ind = 0; ind < config.num_miners; ind ++) {
