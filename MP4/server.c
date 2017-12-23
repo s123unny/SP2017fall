@@ -128,7 +128,7 @@ void *process_matching(void *ptr)
 		}
 		for (; current_match < 4 && current_match < waiting.size(); current_match++) {
 			//asign first job
-			printf("give work\n");
+			fprintf(stderr, "give work %d %d\n", current_match, waiting.size());
 			*forkinfo[current_match] = insert;
 			item.fd = waiting[current_match];
 			item.fd_info = fds[item.fd];
@@ -154,9 +154,8 @@ void *process_matching(void *ptr)
 						*(flag[i]+2) = 0;
 						for (it = process.begin(); it->second != i; it++) {
 							fprintf(stderr, "looping? %d\n", it->second);
-							while (!*(flag[it->second]+1)) {
-								*(flag[it->second]+1) = 0;
-							} //wait until finish
+							while (!*(flag[it->second]+1)) {} //wait until finish
+							*(flag[it->second]+1) = 0;
 							fprintf(stderr, "not looping\n");
 							if (*(flag[it->second]+2)) {
 								*(flag[it->second]+2) = 0;
@@ -167,11 +166,11 @@ void *process_matching(void *ptr)
 						fprintf(stderr, "found fd:%d\n", match);
 						fprintf(stderr, "waiting erase %d\n", it->first);
 						waiting.erase(waiting.begin()+it->first);
+						it ++;
 						for (; it != process.end(); it ++) {
-							while (!*(flag[it->second]+1)) {
-								*(flag[it->second]+1) = 0;
-								*(flag[it->second]+2) = 0;
-							}
+							while (!*(flag[it->second]+1)) {}
+							*(flag[it->second]+1) = 0;
+							*(flag[it->second]+2) = 0;
 						}
 						*(flag[i]+1) = 0;
 						longjmp(found, match);
@@ -187,7 +186,7 @@ void *process_matching(void *ptr)
 							}
 						}
 						if (current_match < waiting.size()) {
-							printf("give work\n");
+							fprintf(stderr, "give work %d %d\n", current_match, waiting.size());
 							item.fd = waiting[current_match];
 							item.fd_info = fds[item.fd];
 							*(forkinfo[i]+1) = item;
@@ -195,6 +194,7 @@ void *process_matching(void *ptr)
 							process[current_match] = i;
 							*flag[i] = 1;
 						}
+						current_match ++;
 					}
 					*(flag[i]+1) = 0;
 				}
