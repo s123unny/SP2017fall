@@ -14,6 +14,8 @@
 #include <map>
 #include <vector>
 #include <queue>
+#include <setjmp.h>
+#include <sys/mman.h>
 
 #include "cJSON/cJSON.h"
 #define BufferSize 6144
@@ -38,18 +40,28 @@ struct Fd_Info{
 	int partner;
 	struct User user_info;
 	char filter_function[4097];
-	void* handle;
+	char file_so[36];
 };
 
 struct Fork_Info{
-	pid_t pid;
-	int fd, wait_index;
+	int fd;
+	Fd_Info fd_info;
+};
+
+struct Process_info{
+	int wait_index, fork_id;
+	bool operator<(Process_info other) const {
+        return wait_index > other.wait_index;
+    }
 };
 char struct_info[90] = "struct User{char name[33];unsigned int age;char gender[7];char introduction[1025];};\n";
 char gcc_command[25] = "gcc -fPIC -shared -o ";
 std::map<int, Fd_Info> fds;
 std::vector<int> waiting; //fd
 std::queue<int> newers;
+char *flag[4]; //work finish result
+int wait_index[4];
+Fork_Info *forkinfo[4];
 void create_json_match(char *string, Fd_Info *fd_info)
 {
 	cJSON *root = cJSON_CreateObject();
@@ -60,113 +72,122 @@ void create_json_match(char *string, Fd_Info *fd_info)
     cJSON_AddItemToObject(root, "introduction", cJSON_CreateString(fd_info->user_info.introduction));
     cJSON_AddItemToObject(root, "filter_function", cJSON_CreateString(fd_info->filter_function));
 
-    string = cJSON_PrintUnformatted(root);
+    strcpy(string, cJSON_PrintUnformatted(root));
     cJSON_Delete(root);
 }
 void send_info_to_each_other(int fd_1, int fd_2)
 {
 	printf("%d %d\n", fd_1, fd_2);
-	char *one, *two;
-	Fd_Info one_info = fds[fd_1];
-	Fd_Info two_info = fds[fd_2];
-	create_json_match(one, &one_info);
-	create_json_match(two, &two_info);
+	char one[6144], two[6144];
+	Fd_Info *one_info = &(fds.find(fd_1)->second);
+	Fd_Info *two_info = &(fds.find(fd_2)->second);
+	create_json_match(one, one_info);
+	create_json_match(two, two_info);
 	send(fd_1, two, strlen(two), 0);
 	send(fd_1, "\n", 1, 0);
 	send(fd_2, one, strlen(one), 0);
 	send(fd_2, "\n", 1, 0);
-	one_info.status = CHATTING;
-	two_info.status = CHATTING; 
-}
-Fork_Info process_fork(int i, int fd, Fd_Info *insert)
-{
-	Fork_Info item;
-	pid_t pid = fork();
-	if (pid == 0) { //child
-		pid_t child1 = fork();
-		if (child1 == 0) {
-			int (*filter)(struct User) = (int (*)(struct User)) dlsym(insert->handle, "filter_function");
-			struct User user = fds[waiting[i]].user_info;
-			int result = filter(user);
-			printf("result: %d\n", result);
-			exit(result);
-		}
-		pid_t child2 = fork();
-		if (child2 == 0) {
-			int (*filter)(struct User) = (int (*)(struct User)) dlsym(fds[waiting[i]].handle, "filter_function");
-			struct User user = insert->user_info;
-			int result = filter(user);
-			printf("result: %d\n", result);
-			exit(result);
-		}
-		int result1, result2;
-		waitpid(child1, &result1, 0);
-		waitpid(child2, &result2, 0);
-		printf("parent recv result: %d %d\n", result1, result2);
-		if (result1 == 1 && result2 == 1) {
-			exit(1);
-		}
-		exit(0);
-	} else { //parent
-		item.wait_index = i;
-		item.pid = pid;
-		item.fd = waiting[i];
-		printf("pid: %d\n", item.pid);
-		return item;
-	}
+	one_info->status = CHATTING;
+	two_info->status = CHATTING; 
+	one_info->partner = fd_2;
+	two_info->partner = fd_1;
 }
 void *process_matching(void *ptr)
 {
+	jmp_buf found;
+	int match, match_fd;
 	while (1) {
-		int found = 0;
 		if (newers.empty()) continue;
 		printf("process newers\n");
-		int fd = newers.front();
-		Fd_Info insert = fds[fd];
-		newers.pop();
 		
-		std::queue<Fork_Info> process;
-		Fork_Info item;
-		int current_match = 0;
-		for (; current_match < 4 && current_match < waiting.size(); current_match++) {
-			//fork
-			printf("fork\n");
-			item = process_fork(current_match, fd, &insert);
-			process.push(item);
+		std::map<int, int> process; //<wait_index, fork_id>
+		std::map<int, int>::iterator it_find, it;
+		Process_info current;
+		Fork_Info item, insert;
+		insert.fd = newers.front();
+		insert.fd_info = fds[insert.fd];
+		fprintf(stderr, "newers pop\n");
+		newers.pop();
+		if (fds.find(insert.fd) == fds.end() || fds[insert.fd].status == FREE) continue;
+		if ((match_fd = setjmp(found)) != 0) {
+			send_info_to_each_other(insert.fd, match_fd);
+			continue;
 		}
-		int wstatus;
-		pid_t pid, pid_f;
-		Fork_Info match;
-		while (!process.empty()) {
-			pid = wait(&wstatus);
-			printf("wait: %d %d\n", pid, wstatus);
-			if (wstatus == 1) { //found
-				printf("found\n");
-				found = 1;
-				while (pid != process.front().pid) {
-					pid_f = process.front().pid;
-					waitpid(pid_f, &wstatus, 0);
-					if (wstatus == 1) {
-						break;
-					}
-					process.pop();
-				}
-				match = process.front();
-				send_info_to_each_other(match.fd, fd);
-				waiting.erase(waiting.begin()+match.wait_index);
-			} else {
+		int current_match = 0;
+		if (waiting.size()) {
+			while (fds.find(waiting[current_match]) == fds.end() || fds[waiting[current_match]].status == FREE) {
+				fprintf(stderr, "waiting erase\n");
+				waiting.erase(waiting.begin());
 				if (current_match < waiting.size()) {
-					item = process_fork(current_match, fd, &insert);
-					process.push(item);
-					current_match ++;
+					break;
 				}
 			}
 		}
-		if (!found) {
-			waiting.push_back(fd);
+		for (; current_match < 4 && current_match < waiting.size(); current_match++) {
+			//asign first job
+			printf("give work\n");
+			*forkinfo[current_match] = insert;
+			item.fd = waiting[current_match];
+			item.fd_info = fds[item.fd];
+			*(forkinfo[current_match]+1) = item;
+			wait_index[current_match] = current_match;
+			process[current_match] = current_match;
+			*flag[current_match] = 1;
+			while (fds.find(waiting[current_match]) == fds.end() || fds[waiting[current_match]].status == FREE) {
+				fprintf(stderr, "waiting erase\n");
+				waiting.erase(waiting.begin()+current_match);
+				if (current_match < waiting.size()) {
+					break;
+				}
+			}
 		}
+		while (!process.empty()) {
+			for (int i = 0; i < 4; i++) {
+				if (*(flag[i]+1)) {
+					printf("someone finish work\n");
+					if (*(flag[i]+2)) { //found
+						printf("receive found\n");
+						match = waiting[wait_index[i]];
+						*(flag[i]+2) = 0;
+						for (it = process.begin(); it->second != i; it++) {
+							while (!*(flag[it->second]+1)) {} //wait until finish
+							if (*(flag[it->second]+2)) {
+								match = waiting[it->first];
+								break;
+							}
+						}
+						fprintf(stderr, "found fd:%d\n", match);
+						fprintf(stderr, "waiting erase %d\n", it->first);
+						waiting.erase(waiting.begin()+it->first);
+						longjmp(found, match);
+					} else {
+						process.erase(wait_index[i]);
+						if (current_match < waiting.size()) {
+							while (fds.find(waiting[current_match]) == fds.end() || fds[waiting[current_match]].status == FREE) {
+								fprintf(stderr, "waiting erase\n");
+								waiting.erase(waiting.begin()+current_match);
+								if (current_match < waiting.size()) {
+									break;
+								}
+							}
+						}
+						if (current_match < waiting.size()) {
+							printf("give work\n");
+							item.fd = waiting[current_match];
+							item.fd_info = fds[item.fd];
+							*(forkinfo[i]+1) = item;
+							wait_index[i] = current_match;
+							process[current_match] = i;
+							*flag[i] = 1;
+						}
+					}
+					*(flag[i]+1) = 0;
+				}
+			}
+		}
+		fprintf(stderr, "waiting push_back\n");
+		waiting.push_back(insert.fd);
 	}
-	pthread_exit(0);
 }
 void json_parse_try_match(Fd_Info *element, int fd)
 {
@@ -181,7 +202,7 @@ void json_parse_try_match(Fd_Info *element, int fd)
 	subitem = subitem->next;
 	strcpy(element->user_info.introduction, subitem->valuestring);
 
-	char function[4097], function_name[5];
+	char function[4097], function_name[15];
 	subitem = subitem->next;
 	strcpy(function, subitem->valuestring);
 	strcpy(element->filter_function, function);
@@ -192,13 +213,13 @@ void json_parse_try_match(Fd_Info *element, int fd)
 	close(function_fd);
 	cJSON_Delete(root);
 
-	char gcc_local[100] = {};
+	char gcc_local[100];
 	sprintf(gcc_local, "%sclient/%d.so %s", gcc_command, fd, function_name);
+	fprintf(stderr, "gcc: %s\n", gcc_local);
 	system(gcc_local);
 
 	char file_so[36];
-	sprintf(file_so, "client/%d.so", fd);
-	element->handle = dlopen(file_so, RTLD_LAZY);
+	sprintf(element->file_so, "client/%d.so", fd);
 
 	memset(element->buffer, 0, BufferSize);
 	element->status = MATCHING;
@@ -218,15 +239,53 @@ int main(int argc, char const *argv[])
 	int retval = bind(sockfd, (struct sockaddr*) &server_addr, sizeof(server_addr));
 	retval = listen(sockfd, 5);
 
+	//pthread & fork
+	pthread_t thread;
+	for (int i = 0; i < 4; i++) {
+		flag[i] = (char*)mmap(NULL, sizeof(char)*3, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
+		forkinfo[i] = (Fork_Info*)mmap(NULL, sizeof(Fork_Info)*2, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
+		pid_t pid = fork();
+		if (pid == 0) {
+			while (1) {
+				if (! *(flag[i]) ) {
+					continue;
+				}
+				printf("working\n");
+				*(flag[i]) = 0;
+				void *handle = dlopen((*forkinfo[i]).fd_info.file_so, RTLD_LAZY);
+				dlerror();
+				int (*filter)(struct User) = (int (*)(struct User)) dlsym(handle, "filter_function");
+				const char *dlsym_error = dlerror();
+    			if (dlsym_error) {
+    				printf("error: %s\n", dlsym_error);
+    			}
+				struct User user = (*(forkinfo[i]+1)).fd_info.user_info;
+				int result = filter(user);
+				dlclose(handle);
+				printf("result %d\n", result);
+				if (result) {
+					handle = dlopen((*(forkinfo[i]+1)).fd_info.file_so, RTLD_LAZY);
+					int (*filter)(struct User) = (int (*)(struct User)) dlsym( handle, "filter_function");
+					user = (*forkinfo[i]).fd_info.user_info;
+					int result = filter(user);
+					dlclose(handle);
+					printf("result %d\n", result);
+					if (result) {
+						printf("found in fork\n");
+						*(flag[i]+2) = 1;
+					}
+				}
+				*(flag[i]+1) = 1;
+			}
+		}
+	}
+
 	//init select
 	int max_fd = sockfd + 1;
 	fd_set readset;
 	fd_set working_readset;
 	FD_ZERO(&readset);
 	FD_SET(sockfd, &readset);
-
-	//pthread
-	pthread_t thread;
 
 	//json init
 	int len1, len2, len3;
@@ -248,7 +307,7 @@ int main(int argc, char const *argv[])
     cJSON_Delete(quit_ptr);
 
 	char buffer[BufferSize];
-	Fd_Info temp;
+	Fd_Info *temp;
 	while (1) {
 		memcpy(&working_readset, &readset, sizeof(fd_set));
     	retval = select(max_fd, &working_readset, NULL, NULL, NULL);
@@ -263,7 +322,7 @@ int main(int argc, char const *argv[])
 	            int client_fd = accept(fd, (struct sockaddr*) &client_addr, &addrlen);
 	            if (client_fd >= 0) {
 	            	//add new fd for later communication
-	            	printf("new connection\n");
+	            	fprintf(stderr, "new connection\n");
 	                FD_SET(client_fd, &readset);
 	                max_fd = max(max_fd, client_fd+1);
 
@@ -281,15 +340,15 @@ int main(int argc, char const *argv[])
 
 	            if (sz == 0) { //client close connection
 	            	//send quit to other side
-	            	printf("client quit\n");
+	            	fprintf(stderr, "client quit\n");
 					send(element->partner, other_quit, len2, 0);
-					Fd_Info temp = fds[element->partner];
-					temp.status = FREE;
+					send(element->partner, "\n", 1, 0);
+					temp = &fds[element->partner];
+					temp->status = FREE;
 
 					//close 
 	                close(fd);
 	                FD_CLR(fd, &readset);
-	                dlclose(element->handle);
 					fds.erase(fd);
 	            } else if (sz < 0) { // error?
 	                /* 進行錯誤處理
@@ -297,15 +356,17 @@ int main(int argc, char const *argv[])
 	            } else { // sz > 0，表示有新資料讀入
 	                strcat(element->buffer, buffer);
 	                char *ptr = strchr(element->buffer, '\n');
-	                printf("receive message\n");
+	                fprintf(stderr, "receive message\n");
+	                // fprintf(stderr, "%s\n", element->buffer);
 	                if (ptr != NULL) { //complete request
 	                	switch(element->status) {
 	                	case FREE:
 	                		//try_match
-	                		printf("try match\n");
+	                		fprintf(stderr, "try match\n");
 	                		json_parse_try_match(element, fd);
 	                		send(fd, try_match, len1, 0);
 	                		send(fd, "\n", 1, 0);
+	                		fprintf(stderr, "newers push\n");
 	                		newers.push(fd);
 	                		//create thread
 	                		pthread_create(&thread, NULL, process_matching, (void*) NULL);
@@ -313,17 +374,19 @@ int main(int argc, char const *argv[])
 	                		break;
 	                	case MATCHING:
 	                		//quit
+	                		fprintf(stderr, "MATCHING\n");
 	                		send(fd, quit, len3, 0);
 	                		send(fd, "\n", 1, 0);
 	                		element->status = FREE;
 	                		//other
 	                		send(element->partner, other_quit, len2, 0);
 	                		send(element->partner, "\n", 1, 0);
-	                		temp = fds[element->partner];
-							temp.status = FREE;
+	                		temp = &fds[element->partner];
+							temp->status = FREE;
 	                		break;
 	                	case CHATTING:
 	                		//quit or send_message
+	                		fprintf(stderr, "CHATTING\n");
 	                		if (strcmp(element->buffer, quit) == 0) { //quit
 	                			send(fd, quit, len3, 0);
 	                			send(fd, "\n", 1, 0);
@@ -331,8 +394,8 @@ int main(int argc, char const *argv[])
 
 	                			send(element->partner, other_quit, len2, 0);
 	                			send(element->partner, "\n", 1, 0);
-		                		temp = fds[element->partner];
-								temp.status = FREE;
+		                		temp = &fds[element->partner];
+								temp->status = FREE;
 	                		} else { //message
 	                			int tmp_len = strlen(buffer);
 	                			send(fd, buffer, tmp_len, 0);
