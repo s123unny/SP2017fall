@@ -16,6 +16,7 @@
 #include <queue>
 #include <setjmp.h>
 #include <sys/mman.h>
+#include <assert.h>
 
 #include "cJSON/cJSON.h"
 #define BufferSize 6144
@@ -97,8 +98,10 @@ void *process_matching(void *ptr)
 	jmp_buf found;
 	int match, match_fd;
 	while (1) {
-		if (newers.empty()) continue;
+		if (newers.size() == 0) continue;
+		assert(newers.size());
 		printf("process newers\n");
+		printf("queue: %d %u\n", newers.front(), newers.size());
 		
 		std::map<int, int> process; //<wait_index, fork_id>
 		std::map<int, int>::iterator it_find, it;
@@ -159,6 +162,7 @@ void *process_matching(void *ptr)
 						fprintf(stderr, "found fd:%d\n", match);
 						fprintf(stderr, "waiting erase %d\n", it->first);
 						waiting.erase(waiting.begin()+it->first);
+						*(flag[i]+1) = 0;
 						longjmp(found, match);
 					} else {
 						process.erase(wait_index[i]);
@@ -241,6 +245,7 @@ int main(int argc, char const *argv[])
 
 	//pthread & fork
 	pthread_t thread;
+	pthread_create(&thread, NULL, process_matching, (void*) NULL);
 	for (int i = 0; i < 4; i++) {
 		flag[i] = (char*)mmap(NULL, sizeof(char)*3, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
 		forkinfo[i] = (Fork_Info*)mmap(NULL, sizeof(Fork_Info)*2, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
@@ -368,8 +373,6 @@ int main(int argc, char const *argv[])
 	                		send(fd, "\n", 1, 0);
 	                		fprintf(stderr, "newers push\n");
 	                		newers.push(fd);
-	                		//create thread
-	                		pthread_create(&thread, NULL, process_matching, (void*) NULL);
 	                		element->status = MATCHING;
 	                		break;
 	                	case MATCHING:
@@ -387,7 +390,9 @@ int main(int argc, char const *argv[])
 	                	case CHATTING:
 	                		//quit or send_message
 	                		fprintf(stderr, "CHATTING\n");
-	                		if (strcmp(element->buffer, quit) == 0) { //quit
+	                		//fprintf(stderr, "%d %s %d %s\n", strlen(quit), quit, strlen(element->buffer), element->buffer);
+	                		if (strncmp(element->buffer, quit, 14) == 0) { //quit
+	                			fprintf(stderr, "quit chatting\n");
 	                			send(fd, quit, len3, 0);
 	                			send(fd, "\n", 1, 0);
 	                			element->status = FREE;
