@@ -60,7 +60,7 @@ char gcc_command[25] = "gcc -fPIC -shared -o ";
 std::map<int, Fd_Info> fds;
 std::vector<int> waiting; //fd
 std::queue<int> newers;
-char *flag[4]; //work finish result
+volatile char *flag[4]; //work finish result
 int wait_index[4];
 Fork_Info *forkinfo[4];
 void create_json_match(char *string, Fd_Info *fd_info)
@@ -153,8 +153,13 @@ void *process_matching(void *ptr)
 						match = waiting[wait_index[i]];
 						*(flag[i]+2) = 0;
 						for (it = process.begin(); it->second != i; it++) {
-							while (!*(flag[it->second]+1)) {} //wait until finish
+							fprintf(stderr, "looping? %d\n", it->second);
+							while (!*(flag[it->second]+1)) {
+								*(flag[it->second]+1) = 0;
+							} //wait until finish
+							fprintf(stderr, "not looping\n");
 							if (*(flag[it->second]+2)) {
+								*(flag[it->second]+2) = 0;
 								match = waiting[it->first];
 								break;
 							}
@@ -162,6 +167,12 @@ void *process_matching(void *ptr)
 						fprintf(stderr, "found fd:%d\n", match);
 						fprintf(stderr, "waiting erase %d\n", it->first);
 						waiting.erase(waiting.begin()+it->first);
+						for (; it != process.end(); it ++) {
+							while (!*(flag[it->second]+1)) {
+								*(flag[it->second]+1) = 0;
+								*(flag[it->second]+2) = 0;
+							}
+						}
 						*(flag[i]+1) = 0;
 						longjmp(found, match);
 					} else {
@@ -247,7 +258,7 @@ int main(int argc, char const *argv[])
 	pthread_t thread;
 	pthread_create(&thread, NULL, process_matching, (void*) NULL);
 	for (int i = 0; i < 4; i++) {
-		flag[i] = (char*)mmap(NULL, sizeof(char)*3, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
+		flag[i] = (volatile char*)mmap(NULL, sizeof(char)*3, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
 		forkinfo[i] = (Fork_Info*)mmap(NULL, sizeof(Fork_Info)*2, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
 		pid_t pid = fork();
 		if (pid == 0) {
@@ -267,20 +278,19 @@ int main(int argc, char const *argv[])
 				struct User user = (*(forkinfo[i]+1)).fd_info.user_info;
 				int result = filter(user);
 				dlclose(handle);
-				printf("result %d\n", result);
 				if (result) {
 					handle = dlopen((*(forkinfo[i]+1)).fd_info.file_so, RTLD_LAZY);
 					int (*filter)(struct User) = (int (*)(struct User)) dlsym( handle, "filter_function");
 					user = (*forkinfo[i]).fd_info.user_info;
 					int result = filter(user);
 					dlclose(handle);
-					printf("result %d\n", result);
 					if (result) {
 						printf("found in fork\n");
 						*(flag[i]+2) = 1;
 					}
 				}
 				*(flag[i]+1) = 1;
+				fprintf(stderr, "%d finish work: %d\n", i, result);
 			}
 		}
 	}
@@ -369,8 +379,8 @@ int main(int argc, char const *argv[])
 	                		//try_match
 	                		fprintf(stderr, "try match\n");
 	                		json_parse_try_match(element, fd);
-	                		send(fd, try_match, len1, 0);
-	                		send(fd, "\n", 1, 0);
+	                		fprintf(stderr, "send count: %d ", send(fd, try_match, len1, 0));
+	                		fprintf(stderr, "%d\n", send(fd, "\n", 1, 0));
 	                		fprintf(stderr, "newers push\n");
 	                		newers.push(fd);
 	                		element->status = MATCHING;
