@@ -275,6 +275,10 @@ int main(int argc, char const *argv[])
 	server_addr.sin_port = htons(port);
 
 	int retval = bind(sockfd, (struct sockaddr*) &server_addr, sizeof(server_addr));
+	if (retval != 0) {
+		printf("socket fail\n");
+		return 0;
+	}
 	retval = listen(sockfd, 5);
 
 	//pthread & fork
