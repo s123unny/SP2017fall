@@ -111,6 +111,7 @@ void *process_matching(void *ptr)
 		newers.pop();
 		if (fds.find(insert_fd) == fds.end() || fds[insert_fd].status == FREE) continue;
 		if ((match_fd = setjmp(found)) != 0) {
+			if (fds.find(insert_fd) == fds.end() || fds[insert_fd].status == FREE) continue;
 			send_info_to_each_other(insert_fd, match_fd);
 			continue;
 		}
@@ -134,6 +135,7 @@ void *process_matching(void *ptr)
 						printf("receive found\n");
 						match = waiting[wait_index[i]];
 						*(flag[i]+2) = 0;
+						*(flag[i]+1) = 0;
 						for (it = process.begin(); it->second != i; it++) {
 							fprintf(stderr, "looping? %d\n", it->second);
 							while (!*(flag[it->second]+1)) {} //wait until finish
@@ -147,14 +149,15 @@ void *process_matching(void *ptr)
 						}
 						fprintf(stderr, "found fd:%d\n", match);
 						fprintf(stderr, "waiting erase %d\n", it->first);
-						waiting.erase(waiting.begin()+it->first);
+						if (fds.find(insert_fd) != fds.end() && fds[insert_fd].status != FREE) {
+							waiting.erase(waiting.begin()+it->first);
+						}
 						it ++;
 						for (; it != process.end(); it ++) {
 							while (!*(flag[it->second]+1)) {}
 							*(flag[it->second]+1) = 0;
 							*(flag[it->second]+2) = 0;
 						}
-						*(flag[i]+1) = 0;
 						longjmp(found, match);
 					} else {
 						process.erase(wait_index[i]);
@@ -323,6 +326,8 @@ int main(int argc, char const *argv[])
     char receive_head[] = "{\"cmd\": \"receive_message\",";
     len4 = strlen(receive_head);
 
+    mkdir("client", S_IRWXU);
+
 	char buffer[BufferSize];
 	Fd_Info *temp;
 	while (1) {
@@ -367,6 +372,7 @@ int main(int argc, char const *argv[])
 						for (int i = 0; i < waiting.size(); i++) {
                 			if (waiting[i] == fd) {
                 				waiting.erase(waiting.begin()+i);
+                				break;
                 			}
                 		}
 					}
@@ -401,6 +407,7 @@ int main(int argc, char const *argv[])
 	                		for (int i = 0; i < waiting.size(); i++) {
 	                			if (waiting[i] == fd) {
 	                				waiting.erase(waiting.begin()+i);
+	                				break;
 	                			}
 	                		}
 	                		fprintf(stderr, "MATCHING\n");
