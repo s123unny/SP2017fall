@@ -59,7 +59,7 @@ std::map<int, Fd_Info> fds;
 std::vector<int> waiting; //fd
 std::queue<int> newers;
 volatile char *flag[4]; //work finish result
-int wait_index[4];
+int wait_index[4], current_match, insert_fd;
 Fork_Info *forkinfo[4];
 void create_json_match(char *string, Fd_Info *fd_info)
 {
@@ -94,7 +94,10 @@ void send_info_to_each_other(int fd_1, int fd_2)
 void *process_matching(void *ptr)
 {
 	jmp_buf found;
-	int match, match_fd, insert_fd;
+	int match, match_fd;
+	for (int i = 0; i < 4; i++) {
+		wait_index[i] = -1;
+	}
 	while (1) {
 		if (newers.size() == 0) continue;
 		assert(newers.size());
@@ -115,7 +118,7 @@ void *process_matching(void *ptr)
 			send_info_to_each_other(insert_fd, match_fd);
 			continue;
 		}
-		int current_match = 0;
+		current_match = 0;
 		for (; current_match < 4 && current_match < waiting.size(); current_match++) {
 			//asign first job
 			fprintf(stderr, "give work %d %d\n", current_match, waiting.size());
@@ -134,12 +137,13 @@ void *process_matching(void *ptr)
 					if (*(flag[i]+2)) { //found
 						printf("receive found\n");
 						match = waiting[wait_index[i]];
-						*(flag[i]+2) = 0;
-						*(flag[i]+1) = 0;
+						wait_index[i] = -1;
 						for (it = process.begin(); it->second != i; it++) {
 							fprintf(stderr, "looping? %d\n", it->second);
 							while (!*(flag[it->second]+1)) {} //wait until finish
+							printf("someone finish work.\n");
 							*(flag[it->second]+1) = 0;
+							wait_index[it->second] = -1;
 							fprintf(stderr, "not looping\n");
 							if (*(flag[it->second]+2)) {
 								*(flag[it->second]+2) = 0;
@@ -148,15 +152,18 @@ void *process_matching(void *ptr)
 							}
 						}
 						fprintf(stderr, "found fd:%d\n", match);
-						fprintf(stderr, "waiting erase %d\n", it->first);
 						if (fds.find(insert_fd) != fds.end() && fds[insert_fd].status != FREE) {
+							fprintf(stderr, "waiting erase %d\n", it->first);
 							waiting.erase(waiting.begin()+it->first);
 						}
 						it ++;
 						for (; it != process.end(); it ++) {
+							fprintf(stderr, "wait for %d\n", it->second);
 							while (!*(flag[it->second]+1)) {}
+							printf("someone finish work...\n");
 							*(flag[it->second]+1) = 0;
 							*(flag[it->second]+2) = 0;
+							wait_index[it->second] = -1;
 						}
 						longjmp(found, match);
 					} else {
@@ -169,15 +176,20 @@ void *process_matching(void *ptr)
 							wait_index[i] = current_match;
 							process[current_match] = i;
 							*flag[i] = 1;
+							current_match ++;
+						} else {
+							wait_index[i] = -1;
 						}
-						current_match ++;
 					}
 					*(flag[i]+1) = 0;
 				}
 			}
 		}
-		fprintf(stderr, "waiting push_back\n");
-		waiting.push_back(insert_fd);
+		if (fds.find(insert_fd) != fds.end() && fds[insert_fd].status != FREE) {
+			waiting.push_back(insert_fd);
+			fprintf(stderr, "waiting push_back\n");
+			insert_fd = 0;
+		}
 	}
 }
 void child_process(int i)
@@ -221,6 +233,7 @@ void *keep_child_alive(void *ptr)
 		for (int i = 0; i < 4; i++) {
 			if (waitpid(pidptr->pid[i], &wstatus, WNOHANG) != 0) {
 				fprintf(stderr, "child %d restart\n", i);
+				*(flag[i]+2) = 0;
 				*(flag[i]+1) = 1;
 				pidptr->pid[i] = fork();
 				if (pidptr->pid[i] == 0) {
@@ -362,6 +375,7 @@ int main(int argc, char const *argv[])
 
 	            if (sz == 0) { //client close connection
 	            	fprintf(stderr, "client quit\n");
+	            	fds.erase(fd);
 	            	//send quit to other side
 	            	if (element->status == CHATTING) {
 						send(element->partner, other_quit, len2, 0);
@@ -369,17 +383,35 @@ int main(int argc, char const *argv[])
 						temp = &fds[element->partner];
 						temp->status = FREE;
 					} else if (element->status == MATCHING) {
-						for (int i = 0; i < waiting.size(); i++) {
-                			if (waiting[i] == fd) {
-                				waiting.erase(waiting.begin()+i);
-                				break;
-                			}
-                		}
+						if (insert_fd == fd) {
+							for (int j = 0; j < 4; j++) {
+								if (wait_index[j] != -1) {
+            						kill(pids.pid[j], SIGKILL);
+								}
+            				}
+						} else {
+							for (int i = 0; i < waiting.size(); i++) {
+	                			if (waiting[i] == fd) {
+	                				fprintf(stderr, "waiting erase %d\n", fd);
+	                				waiting.erase(waiting.begin()+i);
+	                				if (i < current_match) {
+	        							current_match --;
+	        						}
+	                				for (int j = 0; j < 4; j++) {
+	                					if (wait_index[j] == i) {
+	                						kill(pids.pid[j], SIGKILL);
+	                					} else if (i < wait_index[j]) {
+	                						wait_index[j] --;
+	                					}
+	                				}
+	                				break;
+	                			}
+	                		}
+	                	}
 					}
 					//close 
 	                close(fd);
 	                FD_CLR(fd, &readset);
-					fds.erase(fd);
 	            } else if (sz < 0) { // error?
 	                /* 進行錯誤處理
 	                   ...略...  */
@@ -404,12 +436,31 @@ int main(int argc, char const *argv[])
 	                		break;
 	                	case MATCHING:
 	                		//quit
-	                		for (int i = 0; i < waiting.size(); i++) {
-	                			if (waiting[i] == fd) {
-	                				waiting.erase(waiting.begin()+i);
-	                				break;
-	                			}
-	                		}
+	                		if (insert_fd == fd) {
+								for (int j = 0; j < 4; j++) {
+									if (wait_index[j] != -1) {
+	            						kill(pids.pid[j], SIGKILL);
+									}
+	            				}
+							} else {
+		                		for (int i = 0; i < waiting.size(); i++) {
+		                			if (waiting[i] == fd) {
+		                				fprintf(stderr, "waiting erase %d\n", fd);
+		                				waiting.erase(waiting.begin()+i);
+		                				if (i < current_match) {
+			    							current_match --;
+			    						}
+			            				for (int j = 0; j < 4; j++) {
+			            					if (wait_index[j] == i) {
+			            						kill(pids.pid[j], SIGKILL);
+			            					} else if (i < wait_index[j]) {
+		                						wait_index[j] --;
+		                					}
+			            				}
+		                				break;
+		                			}
+		                		}
+		                	}
 	                		fprintf(stderr, "MATCHING\n");
 	                		send(fd, quit, len3, 0);
 	                		send(fd, "\n", 1, 0);
