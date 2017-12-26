@@ -54,7 +54,7 @@ struct Pids{
 };
 
 char struct_info[90] = "struct User{char name[33];unsigned int age;char gender[7];char introduction[1025];};\n";
-char gcc_command[25] = "gcc -fPIC -shared -o ";
+char gcc_command[40] = "gcc -fPIC -O2 -std=c11 -shared -o ";
 std::map<int, Fd_Info> fds;
 std::vector<int> waiting; //fd
 std::queue<int> newers;
