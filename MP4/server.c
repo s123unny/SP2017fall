@@ -59,7 +59,7 @@ std::map<int, Fd_Info> fds;
 std::vector<int> waiting; //fd
 std::queue<int> newers;
 volatile char *flag[4]; //work finish result
-int wait_index[4], current_match, insert_fd;
+int wait_index[4], current_match, insert_fd, quit_count[1030], is_kill;
 Fork_Info *forkinfo[4];
 void create_json_match(char *string, Fd_Info *fd_info)
 {
@@ -105,6 +105,7 @@ void *process_matching(void *ptr)
 		printf("queue: %d %u\n", newers.front(), newers.size());
 		
 		std::map<int, int> process; //<wait_index, fork_id>
+		fprintf(stderr, "new process\n");
 		std::map<int, int>::iterator it_find, it;
 		Fork_Info item, insert;
 		insert_fd = newers.front();
@@ -112,10 +113,17 @@ void *process_matching(void *ptr)
 		strcpy(insert.file_so, fds[insert_fd].file_so);
 		fprintf(stderr, "newers pop\n");
 		newers.pop();
-		if (fds.find(insert_fd) == fds.end() || fds[insert_fd].status == FREE) continue;
+		if (quit_count[insert_fd]) {
+			quit_count[insert_fd] --;
+			continue;
+		}
 		if ((match_fd = setjmp(found)) != 0) {
-			if (fds.find(insert_fd) == fds.end() || fds[insert_fd].status == FREE) continue;
+			if (is_kill) {
+				is_kill = 0;
+				continue;
+			}
 			send_info_to_each_other(insert_fd, match_fd);
+			insert_fd = 0;
 			continue;
 		}
 		current_match = 0;
@@ -133,15 +141,15 @@ void *process_matching(void *ptr)
 		while (!process.empty()) {
 			for (int i = 0; i < 4; i++) {
 				if (*(flag[i]+1)) {
-					printf("someone finish work\n");
+					fprintf(stderr, "someone finish work\n");
 					if (*(flag[i]+2)) { //found
-						printf("receive found\n");
+						fprintf(stderr, "receive found %d\n", i);
 						match = waiting[wait_index[i]];
 						wait_index[i] = -1;
-						for (it = process.begin(); it->second != i; it++) {
-							fprintf(stderr, "looping? %d\n", it->second);
+						for (it = process.begin(); it->second != i && it != process.end(); it++) {
+							fprintf(stderr, "looping? %d %d\n", it->second, it->first);
 							while (!*(flag[it->second]+1)) {} //wait until finish
-							printf("someone finish work.\n");
+							fprintf(stderr, "someone finish work.\n");
 							*(flag[it->second]+1) = 0;
 							wait_index[it->second] = -1;
 							fprintf(stderr, "not looping\n");
@@ -152,7 +160,7 @@ void *process_matching(void *ptr)
 							}
 						}
 						fprintf(stderr, "found fd:%d\n", match);
-						if (fds.find(insert_fd) != fds.end() && fds[insert_fd].status != FREE) {
+						if (!is_kill) {
 							fprintf(stderr, "waiting erase %d\n", it->first);
 							waiting.erase(waiting.begin()+it->first);
 						}
@@ -160,14 +168,18 @@ void *process_matching(void *ptr)
 						for (; it != process.end(); it ++) {
 							fprintf(stderr, "wait for %d\n", it->second);
 							while (!*(flag[it->second]+1)) {}
-							printf("someone finish work...\n");
+							fprintf(stderr, "someone finish work...\n");
 							*(flag[it->second]+1) = 0;
 							*(flag[it->second]+2) = 0;
 							wait_index[it->second] = -1;
 						}
+						*(flag[i]+1) = 0;
+						*(flag[i]+2) = 0;
+						current_match = 0;
 						longjmp(found, match);
 					} else {
 						process.erase(wait_index[i]);
+						fprintf(stderr, "process erase\n");
 						if (current_match < waiting.size()) {
 							fprintf(stderr, "give work %d %d\n", current_match, waiting.size());
 							strcpy(item.file_so, fds[waiting[current_match]].file_so);
@@ -185,11 +197,13 @@ void *process_matching(void *ptr)
 				}
 			}
 		}
-		if (fds.find(insert_fd) != fds.end() && fds[insert_fd].status != FREE) {
+		if (!is_kill) {
 			waiting.push_back(insert_fd);
 			fprintf(stderr, "waiting push_back\n");
 			insert_fd = 0;
 		}
+		current_match = 0;
+		is_kill = 0;
 	}
 }
 void child_process(int i)
@@ -235,6 +249,7 @@ void *keep_child_alive(void *ptr)
 				fprintf(stderr, "child %d restart\n", i);
 				*(flag[i]+2) = 0;
 				*(flag[i]+1) = 1;
+				*(flag[i]) = 0;
 				pidptr->pid[i] = fork();
 				if (pidptr->pid[i] == 0) {
 					child_process(i);
@@ -384,12 +399,14 @@ int main(int argc, char const *argv[])
 						temp->status = FREE;
 					} else if (element->status == MATCHING) {
 						if (insert_fd == fd) {
+							is_kill = 1;
 							for (int j = 0; j < 4; j++) {
 								if (wait_index[j] != -1) {
             						kill(pids.pid[j], SIGKILL);
 								}
             				}
 						} else {
+							int in_waiting = 0;
 							for (int i = 0; i < waiting.size(); i++) {
 	                			if (waiting[i] == fd) {
 	                				fprintf(stderr, "waiting erase %d\n", fd);
@@ -399,13 +416,18 @@ int main(int argc, char const *argv[])
 	        						}
 	                				for (int j = 0; j < 4; j++) {
 	                					if (wait_index[j] == i) {
+	                						fprintf(stderr, "kill %d\n", j);
 	                						kill(pids.pid[j], SIGKILL);
 	                					} else if (i < wait_index[j]) {
 	                						wait_index[j] --;
 	                					}
 	                				}
+	                				in_waiting = 1;
 	                				break;
 	                			}
+	                		}
+	                		if (!in_waiting) {
+	                			quit_count[fd] ++;
 	                		}
 	                	}
 					}
@@ -436,13 +458,16 @@ int main(int argc, char const *argv[])
 	                		break;
 	                	case MATCHING:
 	                		//quit
+	                		element->status = FREE;
 	                		if (insert_fd == fd) {
+	                			is_kill = 1;
 								for (int j = 0; j < 4; j++) {
 									if (wait_index[j] != -1) {
 	            						kill(pids.pid[j], SIGKILL);
 									}
 	            				}
 							} else {
+								int in_waiting = 0;
 		                		for (int i = 0; i < waiting.size(); i++) {
 		                			if (waiting[i] == fd) {
 		                				fprintf(stderr, "waiting erase %d\n", fd);
@@ -452,19 +477,23 @@ int main(int argc, char const *argv[])
 			    						}
 			            				for (int j = 0; j < 4; j++) {
 			            					if (wait_index[j] == i) {
+			            						fprintf(stderr, "kill %d\n", j);
 			            						kill(pids.pid[j], SIGKILL);
 			            					} else if (i < wait_index[j]) {
 		                						wait_index[j] --;
 		                					}
 			            				}
+			            				in_waiting = 1;
 		                				break;
 		                			}
+		                		}
+		                		if (!in_waiting) {
+		                			quit_count[fd] ++;
 		                		}
 		                	}
 	                		fprintf(stderr, "MATCHING\n");
 	                		send(fd, quit, len3, 0);
 	                		send(fd, "\n", 1, 0);
-	                		element->status = FREE;
 	                		break;
 	                	case CHATTING:
 	                		//quit or send_message
