@@ -522,6 +522,7 @@ int main(int argc, char const *argv[])
 		                start = ptr+1;
 		                ptr = strchr(start, '\n');
 		            }
+		            strcat(element->buffer, start);
 	            }
 	        }
 	    }
