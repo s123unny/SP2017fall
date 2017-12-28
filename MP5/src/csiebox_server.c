@@ -34,7 +34,25 @@ static char* get_user_homedir(csiebox_server* server, csiebox_client_info* info)
 static char* check_client_and_get_homedir(csiebox_server* server, int conn_fd, int client_id);
 static void rm_file(csiebox_server* server, int conn_fd, csiebox_protocol_rm* rm);
 
-uint32_t active_thread_num = 0;
+uint32_t active_thread_num = 0, network_byte_order;
+char fifo[PATH_MAX];
+int fifo_fd;
+
+static void signal_handler(int signum) {
+	switch(signum) {
+	case SIGUSR1:
+		fifo_fd = open(fifo, O_WRONLY);
+		network_byte_order = htonl(active_thread_num);
+		write(fifo_fd, &network_byte_order, sizeof(uint32_t));
+		close(fifo_fd);
+		break;
+	case SIGTERM:
+	case SIGINT:
+		unlink(fifo);
+		exit(0);
+		break;
+	}
+}
 
 void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
   csiebox_server* tmp = (csiebox_server*)malloc(sizeof(csiebox_server));
@@ -64,8 +82,22 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
   }
   memset(tmp->client, 0, sizeof(csiebox_client_info*) * getdtablesize());
   tmp->listen_fd = fd;
-  *server = tmp;
 
+  pid_t pid = getpid();
+  sprintf(tmp->fifo, "%s/fifo.%d", tmp->arg.run_path, pid);
+  strcpy(fifo, tmp->fifo);
+  mkfifo(tmp->fifo, 0666);
+
+  if( signal(SIGUSR1, signal_handler) == SIG_ERR  ) {
+    printf("Unable to create handler for SIGUSR1\n");
+  }
+  if( signal(SIGTERM, signal_handler) == SIG_ERR  ) {
+    printf("Unable to create handler for SIGTERM\n");
+  }
+  if( signal(SIGINT, signal_handler) == SIG_ERR  ) {
+    printf("Unable to create handler for SIGINT\n");
+  }
+  *server = tmp;
 }
 
 int csiebox_server_run(csiebox_server* server) {
