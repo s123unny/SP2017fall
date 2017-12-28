@@ -66,7 +66,6 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
     free(tmp);
     return;
   }
-
   int fd = server_start();
   if (fd < 0) {
     fprintf(stderr, "server fail\n");
@@ -80,14 +79,10 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
     free(tmp);
     return;
   }
+
   memset(tmp->client, 0, sizeof(csiebox_client_info*) * getdtablesize());
   tmp->listen_fd = fd;
-
-  pid_t pid = getpid();
-  sprintf(tmp->fifo, "%s/fifo.%d", tmp->arg.run_path, pid);
-  strcpy(fifo, tmp->fifo);
-  mkfifo(tmp->fifo, 0666);
-
+  
   if( signal(SIGUSR1, signal_handler) == SIG_ERR  ) {
     printf("Unable to create handler for SIGUSR1\n");
   }
@@ -97,7 +92,46 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
   if( signal(SIGINT, signal_handler) == SIG_ERR  ) {
     printf("Unable to create handler for SIGINT\n");
   }
+  
   *server = tmp;
+
+  if (tmp->arg.daemonize) {
+	  pid_t pid_fork = fork();
+	  if (pid_fork != 0) {
+	  	exit(EXIT_SUCCESS);
+	  }
+	  if( setsid()<0 ) { //failed to become session leader
+			fprintf(stderr,"error: failed setsid\n");
+			exit(EXIT_FAILURE);
+	  }
+	  fprintf(stderr, "child1\n");
+	  /* Catch, ignore and handle signals */
+	  signal(SIGCHLD, SIG_IGN);
+	  signal(SIGHUP, SIG_IGN);
+	  
+	  /* Fork off for the second time*/
+	  pid_fork = fork();
+		if (pid_fork != 0) {
+	  	exit(EXIT_SUCCESS);
+	  }
+	  fprintf(stderr, "child2\n");
+	  //new file permissions
+	  umask(0);
+
+	  close(STDIN_FILENO);
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
+	}
+
+  pid_t pid = getpid();
+  sprintf(tmp->fifo, "%s/fifo.%d", tmp->arg.run_path, pid);
+  strcpy(fifo, tmp->fifo);
+  mkfifo(tmp->fifo, 0666);
+
+	char run_pid[30] = "../run/csiebox_server.pid", str[20];
+	int run_pid_fd = open(run_pid, O_WRONLY | O_TRUNC | O_CREAT, 0644);
+	sprintf(str,"%d\n",getpid());
+	write(run_pid_fd, str, strlen(str)); 
 }
 
 int csiebox_server_run(csiebox_server* server) {
@@ -231,6 +265,9 @@ static int parse_arg(csiebox_server* server, int argc, char** argv) {
   if (!test) {
     fprintf(stderr, "config error\n");
     return 0;
+  }
+  if (argc == 3 && (strcmp(argv[2], "-d") == 0) ) {
+  	server->arg.daemonize = 1;
   }
   return 1;
 }
