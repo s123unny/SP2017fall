@@ -94,7 +94,6 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
   }
   
   *server = tmp;
-
   if (tmp->arg.daemonize) {
 	  pid_t pid_fork = fork();
 	  if (pid_fork != 0) {
@@ -104,7 +103,6 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
 			fprintf(stderr,"error: failed setsid\n");
 			exit(EXIT_FAILURE);
 	  }
-	  fprintf(stderr, "child1\n");
 	  /* Catch, ignore and handle signals */
 	  signal(SIGCHLD, SIG_IGN);
 	  signal(SIGHUP, SIG_IGN);
@@ -114,13 +112,6 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
 		if (pid_fork != 0) {
 	  	exit(EXIT_SUCCESS);
 	  }
-	  fprintf(stderr, "child2\n");
-	  //new file permissions
-	  umask(0);
-
-	  close(STDIN_FILENO);
-		close(STDOUT_FILENO);
-		close(STDERR_FILENO);
 	}
 
   pid_t pid = getpid();
