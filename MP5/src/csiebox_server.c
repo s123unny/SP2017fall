@@ -103,6 +103,8 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
 			fprintf(stderr,"error: failed setsid\n");
 			exit(EXIT_FAILURE);
 	  }
+	  umask(0);
+
 	  /* Catch, ignore and handle signals */
 	  signal(SIGCHLD, SIG_IGN);
 	  signal(SIGHUP, SIG_IGN);
@@ -114,14 +116,15 @@ void csiebox_server_init(csiebox_server** server, int argc, char** argv) {
 	  }
 	}
 
-  pid_t pid = getpid();
-  sprintf(tmp->fifo, "%s/fifo.%d", tmp->arg.run_path, pid);
-  strcpy(fifo, tmp->fifo);
-  mkfifo(tmp->fifo, 0666);
+  	pid_t pid = getpid();
+  	sprintf(tmp->fifo, "%s/fifo.%d", tmp->arg.run_path, pid);
+  	strcpy(fifo, tmp->fifo);
+  	mkfifo(tmp->fifo, 0666);
 
-	char run_pid[30] = "../run/csiebox_server.pid", str[20];
+	char run_pid[30], str[20];
+	sprintf(run_pid, "%s/csiebox_server.pid", tmp->arg.run_path);
 	int run_pid_fd = open(run_pid, O_WRONLY | O_TRUNC | O_CREAT, 0644);
-	sprintf(str,"%d\n",getpid());
+	sprintf(str,"%d\n", pid);
 	write(run_pid_fd, str, strlen(str)); 
 }
 
